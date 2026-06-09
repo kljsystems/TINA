@@ -1,0 +1,114 @@
+# T.I.N.A — Totally Intelligent Neural Assistant
+
+A modular, voice-activated AI assistant built with Python and Claude.
+
+## Features
+
+- Voice input via Faster-Whisper (offline STT)
+- AI responses via Claude Sonnet (Anthropic)
+- Voice output via ElevenLabs TTS
+- Wake word detection ("Hey TINA")
+- Web search via Tavily
+- Weather via OpenWeatherMap
+- Wikipedia lookups
+- Google Calendar integration (read, create, edit, delete)
+- Persistent memory across sessions
+- Animated HUD dashboard
+- Startup diagnostics
+
+## Project Structure
+
+```
+TINA/
+├── tina.py              # Main entry point
+├── config.py            # All settings
+├── diagnostics.py       # Startup health checks
+├── core/
+│   ├── brain.py         # Claude API + tool routing
+│   ├── voice_in.py      # Whisper STT
+│   ├── voice_out.py     # ElevenLabs TTS
+│   ├── voice_manager.py # Voice selection
+│   └── memory.py        # Memory system
+├── tools/
+│   ├── search.py        # Tavily web search
+│   ├── weather.py       # OpenWeatherMap
+│   ├── wikipedia.py     # Wikipedia
+│   ├── news.py          # News via Tavily
+│   └── calendar_tool.py # Google Calendar
+├── commands/
+│   ├── diagnostics_cmd.py  # "run a system check"
+│   ├── voice_cmd.py        # "change your voice"
+│   └── memory_cmd.py       # "remember that..."
+├── dashboard/
+│   ├── dashboard.html   # Animated HUD
+│   └── writer.py        # Live status writer
+└── data/                # Auto-created, gitignored
+```
+
+## Setup
+
+### 1. Clone the repo
+```bash
+git clone https://github.com/yourusername/tina.git
+cd tina
+```
+
+### 2. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Create your `.env` file
+```
+ANTHROPIC_API_KEY=sk-ant-...
+ELEVENLABS_API_KEY=sk_...
+TAVILY_API_KEY=tvly-...
+OPENWEATHER_API_KEY=...
+```
+
+### 4. Google Calendar (optional)
+- Create a Google Cloud project
+- Enable the Google Calendar API
+- Create OAuth 2.0 credentials (Desktop app)
+- Download as `credentials.json` and place in the root folder
+
+### 5. Run
+```bash
+python tina.py
+```
+
+### 6. Dashboard
+In a second terminal:
+```bash
+python -m http.server 8080
+```
+Then open `http://localhost:8080/dashboard/dashboard.html`
+
+## Adding Features
+
+**New tool** — create a file in `tools/` with `DEFINITIONS` list and `handle(name, inputs)` function. It's auto-discovered.
+
+**New command** — create a file in `commands/` with `TRIGGERS` list and `handle(text, ctx)` function. It's auto-discovered.
+
+No changes to `tina.py` needed.
+
+## Voice Commands
+
+| Say | Action |
+|-----|--------|
+| "Hey TINA" | Wake word |
+| "run a system check" | Diagnostics report |
+| "change your voice" | Voice switcher |
+| "remember that..." | Save to memory |
+| "what do you remember?" | Recall memory |
+| "goodbye TINA" | Shutdown |
+
+## Roadmap
+
+- [ ] Porcupine wake word engine (pending approval)
+- [ ] File system access
+- [ ] ChromaDB long-term memory
+- [ ] FastAPI server for multi-device access
+- [ ] Local LLM via Ollama
+- [ ] KAOS integration
+- [ ] Mobile PWA client

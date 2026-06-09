@@ -1,0 +1,32 @@
+# Environment & secrets
+.env
+credentials.json
+token.json
+
+# Data files (personal)
+data/memory.json
+data/prefs.json
+data/tina_status.json
+data/summaries/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

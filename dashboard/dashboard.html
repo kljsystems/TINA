@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TINA — Command Interface</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;background:#000;overflow:hidden;font-family:'Courier New',monospace}
+#hud{width:100vw;height:100vh;position:relative;display:grid;grid-template-rows:48px 1fr 120px 32px}
+canvas#bg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:0}
+.scan{position:absolute;left:0;width:100%;height:2px;background:rgba(55,138,221,0.1);animation:scan 6s linear infinite;z-index:1;pointer-events:none}
+@keyframes scan{0%{top:-2px}100%{top:100%}}
+.corner{position:absolute;width:32px;height:32px;border-color:rgba(55,138,221,0.6);border-style:solid;z-index:5;transition:border-color 1s}
+.tl{top:8px;left:8px;border-width:2px 0 0 2px}.tr{top:8px;right:8px;border-width:2px 2px 0 0}
+.bl{bottom:36px;left:8px;border-width:0 0 2px 2px}.br{bottom:36px;right:8px;border-width:0 2px 2px 0}
+
+.topbar{position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:0.5px solid rgba(55,138,221,0.2);transition:border-color 1s}
+.topbar-title{font-size:11px;letter-spacing:0.4em;color:rgba(55,138,221,0.7);text-transform:uppercase}
+.topbar-badges{display:flex;gap:12px}
+.badge{font-size:9px;letter-spacing:0.2em;padding:4px 12px;border:0.5px solid;text-transform:uppercase;transition:all 0.5s}
+.badge-blue{border-color:rgba(55,138,221,0.4);color:rgba(55,138,221,0.8)}
+.badge-green{border-color:rgba(29,158,117,0.5);color:rgba(29,158,117,0.9)}
+.badge-amber{border-color:rgba(239,159,39,0.4);color:rgba(239,159,39,0.7)}
+.badge-red{border-color:rgba(226,75,74,0.5);color:rgba(226,75,74,0.8)}
+.topbar-time{font-size:11px;color:rgba(55,138,221,0.5);letter-spacing:0.1em}
+
+.body{position:relative;z-index:3;display:grid;grid-template-columns:280px 1fr 280px;gap:0}
+.left-panels,.right-panels{display:flex;flex-direction:column;padding:16px;gap:8px}
+.panel{background:rgba(10,20,50,0.7);border:0.5px solid rgba(55,138,221,0.25);padding:14px 18px;transition:border-color 0.5s,background 0.5s}
+.panel:hover{border-color:rgba(55,138,221,0.6)}
+.plabel{font-size:9px;color:rgba(55,138,221,0.7);letter-spacing:0.3em;text-transform:uppercase;margin-bottom:8px}
+.pval{font-size:18px;color:#85B7EB;letter-spacing:0.05em;font-weight:500;transition:color 0.5s}
+.psub{font-size:10px;color:rgba(29,158,117,0.8);margin-top:5px;letter-spacing:0.1em}
+
+.center-col{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px}
+.ring-wrap{position:relative;width:320px;height:320px;display:flex;align-items:center;justify-content:center}
+#rings{position:absolute;top:0;left:0}
+.ring-inner{position:relative;z-index:2;text-align:center}
+.ring-label{font-size:10px;letter-spacing:0.4em;color:rgba(55,138,221,0.7);text-transform:uppercase;margin-bottom:10px;transition:color 0.5s}
+.ring-name{font-size:48px;font-weight:500;color:#85B7EB;letter-spacing:0.25em;line-height:1;transition:color 0.5s,text-shadow 0.3s}
+.ring-state{font-size:11px;color:#1D9E75;letter-spacing:0.2em;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;transition:color 0.5s}
+.dot{width:8px;height:8px;border-radius:50%;background:#1D9E75;display:inline-block;flex-shrink:0;transition:background 0.3s}
+
+.stat-row{display:flex;gap:12px}
+.stat{background:rgba(10,20,50,0.7);border:0.5px solid rgba(55,138,221,0.2);padding:12px 20px;text-align:center;flex:1;transition:border-color 0.5s,background 0.5s}
+.stat-val{font-size:22px;color:#85B7EB;font-weight:500;transition:color 0.5s}
+.stat-label{font-size:9px;color:rgba(55,138,221,0.6);letter-spacing:0.2em;text-transform:uppercase;margin-top:4px}
+
+.convo-section{position:relative;z-index:3;border-top:0.5px solid rgba(55,138,221,0.2);padding:12px 24px;display:flex;flex-direction:column;gap:6px;overflow:hidden}
+.convo-row{display:flex;gap:16px;align-items:flex-start;animation:fadein 0.4s ease forwards}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.who{font-size:10px;letter-spacing:0.25em;min-width:50px;text-transform:uppercase;padding-top:2px;font-weight:500}
+.who.kai{color:#378ADD}.who.tina{color:#1D9E75}
+.msg{font-size:13px;color:rgba(133,183,235,0.85);line-height:1.5}
+
+.ticker{position:relative;z-index:3;border-top:0.5px solid rgba(55,138,221,0.15);background:rgba(0,0,0,0.8);display:flex;align-items:center;overflow:hidden}
+.ticker-label{font-size:8px;color:rgba(55,138,221,0.4);letter-spacing:0.3em;padding:0 12px;text-transform:uppercase;white-space:nowrap;border-right:0.5px solid rgba(55,138,221,0.2);height:100%;display:flex;align-items:center}
+.ticker-inner{display:inline-block;white-space:nowrap;font-size:9px;color:rgba(55,138,221,0.4);letter-spacing:0.15em;animation:tick 35s linear infinite;padding-left:20px}
+@keyframes tick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+.alert-bar{position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:10;font-size:10px;letter-spacing:0.25em;text-transform:uppercase;padding:6px 20px;opacity:0;transition:opacity 0.4s;pointer-events:none}
+.alert-bar.show{opacity:1}
+.alert-bar.tool{color:#1D9E75;background:rgba(0,20,10,0.9);border:0.5px solid rgba(29,158,117,0.4)}
+.alert-bar.offline{color:#E24B4A;background:rgba(30,0,0,0.95);border:0.5px solid rgba(226,75,74,0.5)}
+
+.offline-overlay{position:absolute;inset:0;z-index:20;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;background:rgba(0,0,0,0.75)}
+.offline-overlay.show{display:flex}
+.offline-title{font-size:32px;letter-spacing:0.4em;color:rgba(226,75,74,0.8);text-transform:uppercase}
+.offline-sub{font-size:10px;letter-spacing:0.3em;color:rgba(226,75,74,0.4);text-transform:uppercase}
+.offline-blink{animation:offblink 2s ease-in-out infinite}
+@keyframes offblink{0%,100%{opacity:0.8}50%{opacity:0.3}}
+
+@keyframes speakPulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.speaking .dot{animation:speakPulse 0.4s ease-in-out infinite}
+.thinking .dot{animation:speakPulse 0.8s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div id="hud">
+  <canvas id="bg"></canvas>
+  <div class="scan"></div>
+  <div class="corner tl"></div><div class="corner tr"></div>
+  <div class="corner bl"></div><div class="corner br"></div>
+
+  <div class="offline-overlay" id="offline-overlay">
+    <div class="offline-title offline-blink">TINA OFFLINE</div>
+    <div class="offline-sub">run python jarvis.py to reconnect</div>
+  </div>
+
+  <div class="alert-bar tool" id="alert"></div>
+
+  <div class="topbar" id="topbar">
+    <div class="topbar-title">T.I.N.A &nbsp;·&nbsp; command interface &nbsp;·&nbsp; v2.0</div>
+    <div class="topbar-badges">
+      <div class="badge badge-green" id="b-stt">whisper — active</div>
+      <div class="badge badge-green" id="b-tts">elevenlabs — active</div>
+      <div class="badge badge-blue" id="b-llm">claude sonnet 4.6</div>
+      <div class="badge badge-amber" id="b-wake">picovoice — pending</div>
+      <div class="badge badge-red" id="b-status" style="display:none">offline</div>
+    </div>
+    <div class="topbar-time" id="clock"></div>
+  </div>
+
+  <div class="body">
+    <div class="left-panels">
+      <div class="panel"><div class="plabel">neural core</div><div class="pval" id="p-model">claude sonnet 4.6</div><div class="psub">anthropic · online</div></div>
+      <div class="panel"><div class="plabel">voice engine</div><div class="pval">elevenlabs</div><div class="psub" id="p-voice-sub">matilda · active</div></div>
+      <div class="panel"><div class="plabel">stt module</div><div class="pval">whisper small</div><div class="psub">offline · cpu mode</div></div>
+      <div class="panel"><div class="plabel">session uptime</div><div class="pval" id="p-uptime">00:00:00</div><div class="psub" id="p-date"></div></div>
+    </div>
+
+    <div class="center-col">
+      <div class="ring-wrap">
+        <canvas id="rings" width="320" height="320"></canvas>
+        <div class="ring-inner" id="ring-inner">
+          <div class="ring-label" id="ring-label">system online</div>
+          <div class="ring-name" id="ring-name">TINA</div>
+          <div class="ring-state" id="ring-state"><span class="dot" id="state-dot"></span><span id="state-text">listening</span></div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val" id="s-facts">0</div><div class="stat-label">facts stored</div></div>
+        <div class="stat"><div class="stat-val" id="s-sessions">0</div><div class="stat-label">sessions logged</div></div>
+        <div class="stat"><div class="stat-val" id="s-tools">5</div><div class="stat-label">tools online</div></div>
+      </div>
+    </div>
+
+    <div class="right-panels">
+      <div class="panel"><div class="plabel">operator</div><div class="pval" id="p-user">—</div><div class="psub" id="p-location">—</div></div>
+      <div class="panel"><div class="plabel">current state</div><div class="pval" id="p-state">listening</div><div class="psub">real-time status</div></div>
+      <div class="panel"><div class="plabel">last tool call</div><div class="pval" id="p-last-tool">—</div><div class="psub" id="p-last-tool-time">—</div></div>
+      <div class="panel"><div class="plabel">wake word</div><div class="pval">hey tina</div><div class="psub">whisper detection</div></div>
+    </div>
+  </div>
+
+  <div class="convo-section" id="convo"></div>
+
+  <div class="ticker">
+    <div class="ticker-label">sys</div>
+    <div class="ticker-inner" id="ticker-text">
+      TINA v2.0 &nbsp;·&nbsp; TOTALLY INTELLIGENT NEURAL ASSISTANT &nbsp;·&nbsp; ALL SYSTEMS NOMINAL &nbsp;·&nbsp; WHISPER STT ACTIVE &nbsp;·&nbsp; ELEVENLABS TTS ACTIVE &nbsp;·&nbsp; GOOGLE CALENDAR CONNECTED &nbsp;·&nbsp; TAVILY SEARCH ONLINE &nbsp;·&nbsp; MEMORY CONTEXT LOADED &nbsp;·&nbsp; PICOVOICE PENDING APPROVAL &nbsp;·&nbsp; AWAITING COMMAND &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+      TINA v2.0 &nbsp;·&nbsp; TOTALLY INTELLIGENT NEURAL ASSISTANT &nbsp;·&nbsp; ALL SYSTEMS NOMINAL &nbsp;·&nbsp; WHISPER STT ACTIVE &nbsp;·&nbsp; ELEVENLABS TTS ACTIVE &nbsp;·&nbsp; GOOGLE CALENDAR CONNECTED &nbsp;·&nbsp; TAVILY SEARCH ONLINE &nbsp;·&nbsp; MEMORY CONTEXT LOADED &nbsp;·&nbsp; PICOVOICE PENDING APPROVAL &nbsp;·&nbsp; AWAITING COMMAND &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+    </div>
+  </div>
+</div>
+
+<script>
+const bg=document.getElementById('bg');
+const bctx=bg.getContext('2d');
+const rc=document.getElementById('rings');
+const rctx=rc.getContext('2d');
+
+function resizeBg(){bg.width=window.innerWidth;bg.height=window.innerHeight;drawGrid()}
+function drawGrid(){
+  const w=bg.width,h=bg.height;
+  bctx.clearRect(0,0,w,h);
+  bctx.strokeStyle='rgba(55,138,221,0.05)';
+  bctx.lineWidth=0.5;
+  const gs=60;
+  for(let x=0;x<w;x+=gs){bctx.beginPath();bctx.moveTo(x,0);bctx.lineTo(x,h);bctx.stroke()}
+  for(let y=0;y<h;y+=gs){bctx.beginPath();bctx.moveTo(0,y);bctx.lineTo(w,y);bctx.stroke()}
+}
+window.addEventListener('resize',resizeBg);
+resizeBg();
+
+const RINGS=[
+  {r:148,spd:0.003,dash:[12,10],col:'rgba(55,138,221,{a})',w:1.5},
+  {r:133,spd:-0.006,dash:[5,14],col:'rgba(29,158,117,{a})',w:1},
+  {r:116,spd:0.011,dash:[3,10],col:'rgba(55,138,221,{a})',w:0.5},
+  {r:96,spd:-0.017,dash:[8,6],col:'rgba(133,183,235,{a})',w:1},
+  {r:74,spd:0.024,dash:[4,8],col:'rgba(29,158,117,{a})',w:0.5},
+];
+const BASE_ALPHA=[0.5,0.4,0.3,0.35,0.5];
+const DOTS=RINGS.map((_,i)=>({a1:Math.random()*Math.PI*2,a2:Math.random()*Math.PI*2}));
+
+let STATE='listening';
+let targetAlpha=1,currentAlpha=1;
+let targetSpeed=1,currentSpeed=1;
+let targetPulse=0,currentPulse=0;
+let isOnline=true;
+let wavePhase=0;
+
+function getStateParams(state){
+  switch(state){
+    case 'speaking': return {alpha:1.4,speed:2.2,pulse:0.08,dotColor:'#85B7EB',ringBase:'rgba(133,183,235,',nameColor:'#B5D4F4'};
+    case 'thinking': return {alpha:1.1,speed:1.5,pulse:0.04,dotColor:'#378ADD',ringBase:'rgba(55,138,221,',nameColor:'#85B7EB'};
+    case 'standby':  return {alpha:0.3,speed:0.4,pulse:0,dotColor:'#5F5E5A',ringBase:'rgba(55,138,221,',nameColor:'#444441'};
+    case 'offline':  return {alpha:0.15,speed:0.2,pulse:0,dotColor:'#E24B4A',ringBase:'rgba(226,75,74,',nameColor:'#791F1F'};
+    default:         return {alpha:0.8,speed:1,pulse:0.02,dotColor:'#1D9E75',ringBase:'rgba(55,138,221,',nameColor:'#85B7EB'};
+  }
+}
+
+function drawRings(ts){
+  const t=ts*0.001;
+  wavePhase+=0.05;
+  const params=getStateParams(isOnline?STATE:'offline');
+  currentAlpha+=(params.alpha-currentAlpha)*0.04;
+  currentSpeed+=(params.speed-currentSpeed)*0.03;
+  currentPulse+=(params.pulse-currentPulse)*0.05;
+
+  const cx=160,cy=160;
+  rctx.clearRect(0,0,320,320);
+
+  const speakWave=STATE==='speaking'?Math.sin(wavePhase)*0.06:0;
+  const pulse=1+currentPulse*Math.sin(t*(STATE==='speaking'?12:STATE==='thinking'?6:3))+speakWave;
+
+  RINGS.forEach((ring,ri)=>{
+    const angle=ring.spd*t*60*currentSpeed;
+    const r=ring.r*pulse*(1+speakWave*(ri%2===0?1:-1)*0.5);
+    const alpha=(BASE_ALPHA[ri]*currentAlpha).toFixed(2);
+    const col=params.ringBase+alpha+')';
+
+    rctx.save();
+    rctx.translate(cx,cy);
+    rctx.rotate(angle);
+    rctx.beginPath();
+    rctx.arc(0,0,r,0,Math.PI*2);
+    rctx.setLineDash(ring.dash);
+    rctx.strokeStyle=col;
+    rctx.lineWidth=ring.w*(STATE==='speaking'?1.5+Math.abs(speakWave)*4:1);
+    rctx.stroke();
+    rctx.restore();
+
+    const da=DOTS[ri].a1+angle;
+    const dx=cx+Math.cos(da)*r,dy=cy+Math.sin(da)*r;
+    rctx.beginPath();
+    rctx.arc(dx,dy,STATE==='speaking'?4:3,0,Math.PI*2);
+    rctx.fillStyle=params.ringBase+'0.9)';
+    rctx.fill();
+
+    if(ri<3){
+      const da2=DOTS[ri].a2-angle;
+      const dx2=cx+Math.cos(da2)*r,dy2=cy+Math.sin(da2)*r;
+      rctx.beginPath();
+      rctx.arc(dx2,dy2,2,0,Math.PI*2);
+      rctx.fillStyle=params.ringBase+'0.5)';
+      rctx.fill();
+    }
+  });
+
+  const glowR=44*pulse;
+  rctx.beginPath();
+  rctx.arc(cx,cy,glowR,0,Math.PI*2);
+  const glowAlpha=(STATE==='speaking'?0.5+Math.abs(speakWave)*2:STATE==='thinking'?0.35:STATE==='standby'?0.08:0.15).toFixed(2);
+  rctx.strokeStyle=params.ringBase+glowAlpha+')';
+  rctx.lineWidth=STATE==='speaking'?22+Math.abs(speakWave)*30:18;
+  rctx.setLineDash([]);
+  rctx.stroke();
+
+  if(STATE==='speaking'){
+    for(let i=0;i<3;i++){
+      const outerR=glowR+10+i*8+Math.abs(speakWave)*15;
+      rctx.beginPath();
+      rctx.arc(cx,cy,outerR,0,Math.PI*2);
+      rctx.strokeStyle=params.ringBase+(0.08-i*0.02).toFixed(2)+')';
+      rctx.lineWidth=4-i;
+      rctx.stroke();
+    }
+  }
+
+  requestAnimationFrame(drawRings);
+}
+requestAnimationFrame(drawRings);
+
+function updateClock(){
+  const now=new Date();
+  const el=document.getElementById('clock');
+  if(el) el.textContent=now.toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+setInterval(updateClock,1000);
+updateClock();
+
+const startTime=Date.now();
+function updateUptime(){
+  const s=Math.floor((Date.now()-startTime)/1000);
+  const h=String(Math.floor(s/3600)).padStart(2,'0');
+  const m=String(Math.floor((s%3600)/60)).padStart(2,'0');
+  const sc=String(s%60).padStart(2,'0');
+  const el=document.getElementById('p-uptime');
+  if(el) el.textContent=h+':'+m+':'+sc;
+}
+setInterval(updateUptime,1000);
+
+const dateEl=document.getElementById('p-date');
+if(dateEl){
+  const now=new Date();
+  dateEl.textContent=now.toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'}).toLowerCase();
+}
+
+function setOnline(online){
+  isOnline=online;
+  const overlay=document.getElementById('offline-overlay');
+  const bstatus=document.getElementById('b-status');
+  const nameEl=document.getElementById('ring-name');
+  const labelEl=document.getElementById('ring-label');
+  const stateEl=document.getElementById('ring-state');
+  const dot=document.getElementById('state-dot');
+  const txt=document.getElementById('state-text');
+  const pstate=document.getElementById('p-state');
+
+  if(!online){
+    overlay.classList.add('show');
+    bstatus.style.display='';
+    if(nameEl) nameEl.style.color='rgba(226,75,74,0.6)';
+    if(labelEl) labelEl.textContent='system offline';
+    if(labelEl) labelEl.style.color='rgba(226,75,74,0.5)';
+    if(dot) dot.style.background='#E24B4A';
+    if(txt) txt.textContent='offline';
+    if(pstate) pstate.textContent='offline';
+    if(stateEl) stateEl.style.color='rgba(226,75,74,0.7)';
+    document.querySelectorAll('.corner').forEach(c=>c.style.borderColor='rgba(226,75,74,0.4)');
+  } else {
+    overlay.classList.remove('show');
+    bstatus.style.display='none';
+    if(nameEl) nameEl.style.color='';
+    if(labelEl) labelEl.textContent='system online';
+    if(labelEl) labelEl.style.color='';
+    if(stateEl) stateEl.style.color='';
+    document.querySelectorAll('.corner').forEach(c=>c.style.borderColor='');
+    updateStateUI(STATE);
+  }
+}
+
+function updateStateUI(state){
+  STATE=state;
+  const txt=document.getElementById('state-text');
+  const dot=document.getElementById('state-dot');
+  const pstate=document.getElementById('p-state');
+  const stateEl=document.getElementById('ring-state');
+  const map={
+    listening:{label:'listening',color:'#1D9E75',stateColor:'rgba(29,158,117,0.9)'},
+    thinking:{label:'processing',color:'#378ADD',stateColor:'rgba(55,138,221,0.9)'},
+    speaking:{label:'speaking',color:'#85B7EB',stateColor:'rgba(133,183,235,0.9)'},
+    standby:{label:'standby',color:'#5F5E5A',stateColor:'rgba(95,94,90,0.7)'},
+  };
+  const s=map[state]||map.listening;
+  if(txt) txt.textContent=s.label;
+  if(dot) dot.style.background=s.color;
+  if(pstate) pstate.textContent=s.label;
+  if(stateEl) stateEl.style.color=s.stateColor;
+}
+
+const convoEl=document.getElementById('convo');
+let history=[];
+function addLine(who,text){
+  history.push({who,text});
+  if(history.length>3) history=history.slice(-3);
+  convoEl.innerHTML='';
+  history.forEach(({who:w,text:t})=>{
+    const row=document.createElement('div');
+    row.className='convo-row';
+    row.innerHTML=`<span class="who ${w.toLowerCase()}">${w}</span><span class="msg">${t}</span>`;
+    convoEl.appendChild(row);
+  });
+}
+
+function showAlert(msg,type='tool'){
+  const el=document.getElementById('alert');
+  el.textContent='// '+msg;
+  el.className='alert-bar '+type+' show';
+  setTimeout(()=>el.classList.remove('show'),3000);
+}
+
+let last={};
+let lastUpdated=null;
+const OFFLINE_TIMEOUT=8000;
+
+async function poll(){
+  try{
+    const r=await fetch('../data/tina_status.json?t='+Date.now());
+    if(!r.ok){
+      if(isOnline) setOnline(false);
+      return;
+    }
+    const d=await r.json();
+    const updated=new Date(d.updated).getTime();
+    const now=Date.now();
+    const stale=now-updated>OFFLINE_TIMEOUT;
+
+    if(stale&&isOnline){ setOnline(false); showAlert('tina offline — jarvis.py not running','offline'); return; }
+    if(!stale&&!isOnline){ setOnline(true); showAlert('tina online','tool'); }
+
+    if(d.state&&d.state!==last.state) updateStateUI(d.state);
+    if(d.last_heard&&d.last_heard!==last.last_heard) addLine('Kai',d.last_heard);
+    if(d.last_response&&d.last_response!==last.last_response) addLine('TINA',d.last_response);
+    if(d.last_tool&&d.last_tool!==last.last_tool){
+      document.getElementById('p-last-tool').textContent=d.last_tool;
+      document.getElementById('p-last-tool-time').textContent=d.last_tool_time||'—';
+      showAlert('tool activated: '+d.last_tool);
+    }
+    if(d.user_name) document.getElementById('p-user').textContent=d.user_name.toLowerCase();
+    if(d.user_location) document.getElementById('p-location').textContent=d.user_location.toLowerCase();
+    if(d.facts_count!==undefined) document.getElementById('s-facts').textContent=d.facts_count;
+    if(d.sessions_count!==undefined) document.getElementById('s-sessions').textContent=d.sessions_count;
+    if(d.tools_count) document.getElementById('s-tools').textContent=d.tools_count;
+    if(d.voice_name) document.getElementById('p-voice-sub').textContent=d.voice_name.toLowerCase()+' · active';
+    last=d;
+  }catch(e){
+    if(isOnline) setOnline(false);
+  }
+}
+setInterval(poll,1000);
+poll();
+
+addLine('TINA','all systems online. ready when you are.');
+</script>
+</body>
+</html>
