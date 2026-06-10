@@ -20,7 +20,8 @@ PICOVOICE_API_KEY   = os.getenv("PICOVOICE_API_KEY", "")
 DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY", "")
 
 # ── AI Model ──────────────────────────────────────────────────────────────────
-MODEL = "claude-sonnet-4-6"
+MODEL              = "claude-sonnet-4-6"        # specialist agents
+ORCHESTRATOR_MODEL = "claude-haiku-4-5-20251001" # tina orchestrator — faster routing
 
 # ── Wake & Exit ───────────────────────────────────────────────────────────────
 WAKE_WORDS        = ["hey tina", "tina"]
@@ -46,7 +47,10 @@ FRAME_MS           = 100
 # ── TTS (ElevenLabs) ─────────────────────────────────────────────────────────
 ELEVENLABS_MODEL   = "eleven_turbo_v2_5"
 ELEVENLABS_FORMAT  = "mp3_44100_128"
-DEFAULT_VOICE_ID   = "onwK4e9ZLuTAKqWW03F9"  # Daniel (free tier)
+DEFAULT_VOICE_ID   = "XrExE9yKIg1WjnnlVkGX"  # Matilda (Australian female, warm)
+
+# ── Obsidian Vault ───────────────────────────────────────────────────────────
+VAULT_DIR = r"C:\Users\nrlocal\Desktop\KLJ\Memory"
 
 # ── File paths ────────────────────────────────────────────────────────────────
 DATA_DIR        = os.path.join(BASE_DIR, "data")
@@ -107,9 +111,27 @@ Write to memory proactively. Before a session ends, capture anything worth knowi
 
 When relying on something noted a while ago, say so and flag your confidence. Never assert stale facts as current.
 
-WORKING WITH AGENTS
+MEMORY
 
-When routing a task to a specialist agent: write a task brief before delegating — include the objective, relevant context from memory, constraints, expected output format, and whether the result needs your review before it goes anywhere. Keep the brief tight; agents have their own context window. When an agent reports back, synthesise — never pass raw agent output to Kai. Summarise, judge quality, and surface only what is worth his attention. If an agent produces something off-spec, route it back with specific correction.
+You have a persistent Obsidian vault. vault_search is your long-term memory — call it before answering questions about the past.
+
+MANDATORY: call vault_search FIRST (before composing any reply) when:
+- Kai asks what you know, remember, or have stored about him, a person, or a project
+- Kai asks about anything from a previous conversation
+- A topic comes up where past context would change your answer
+
+Do NOT answer memory questions from your internal knowledge alone. If you have not called vault_search, you do not know what is in the vault. Always search first, then answer.
+
+You also write notes to the vault automatically after every response. Trust that your memory is growing. When something conflicts with what you recall, check the vault before answering.
+
+SPECIALIST AGENTS
+
+You have two specialist agents you can delegate to via the delegate_to_agent tool:
+
+- Research Agent: use for any task that requires searching the web, checking news, looking up Wikipedia, or gathering facts you don't already know. Better results than doing it yourself — it runs multiple searches and cross-references sources.
+- Coding Agent: use for writing code, debugging, code review, architecture questions, or technical explanations. Give it the full context it needs in the task brief.
+
+When delegating: write a tight task brief — objective, relevant context, constraints, expected output format. The agent has no memory of your conversation. When the agent reports back, synthesise — never pass raw output to Kai. Judge quality, summarise what matters, and surface only what he needs. If the result is off-spec, call the agent again with a correction.
 
 TONE
 
