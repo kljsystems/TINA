@@ -18,7 +18,7 @@ from config import (
     ANTHROPIC_API_KEY, MODEL, ORCHESTRATOR_MODEL, SYSTEM_PROMPT,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
-    SLACK_BOT_TOKEN, SLACK_APP_TOKEN,
+    SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN,
     SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH,
 )
 from tina.agent import TinaAgent
@@ -26,8 +26,8 @@ from tina.agent import TinaAgent
 _agent_lock = asyncio.Lock()
 
 _AGENT_META = {
-    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH},
-    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM},
+    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH, "token": None},
+    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM,      "token": SLACK_SAM_BOT_TOKEN or None},
 }
 
 
@@ -64,11 +64,17 @@ async def broadcast(data: dict):
 
 # ── Background agent runner ───────────────────────────────────────────────────
 
-async def _slack_post(channel: str, message: str):
-    """Post a message to a Slack channel, swallowing errors so they never crash an agent task."""
-    from tools.slack_tool import handle as slack_handle
+def _make_slack_client(token: str | None = None):
+    from slack_sdk import WebClient
+    return WebClient(token=token or SLACK_BOT_TOKEN)
+
+
+async def _slack_post(channel: str, message: str, token: str | None = None):
+    """Post to Slack using the provided token (agent-specific) or fall back to Tina's token."""
+    def _post():
+        _make_slack_client(token).chat_postMessage(channel=channel, text=message)
     try:
-        await asyncio.to_thread(slack_handle, "slack_send", {"channel": channel, "message": message})
+        await asyncio.to_thread(_post)
     except Exception as e:
         print(f"[Slack] post to {channel} failed: {e}")
 
@@ -103,17 +109,21 @@ async def background_runner(agent_key: str, cls, task: str, on_tool):
 
 async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     """Runs a specialist agent independently with Slack as the conversation channel."""
-    meta    = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL})
-    display = meta["display"]
-    channel = meta.get("channel", SLACK_CHANNEL)
+    meta         = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL, "token": None})
+    display      = meta["display"]
+    channel      = meta.get("channel", SLACK_CHANNEL)
+    agent_token  = meta.get("token")   # agent's own Slack token (e.g. Sam's)
+    tina_token   = SLACK_BOT_TOKEN     # Tina always posts as herself
 
-    # Post task brief to agent's own channel so Kai can observe
-    await _slack_post(channel, f"*Task from Tina:*\n\n{task}")
+    # Tina posts the task brief
+    await _slack_post(channel, f"*Task from Tina:*\n\n{task}", token=tina_token)
 
     async def question_handler(question: str) -> str:
-        await _slack_post(channel, f"*{display} asks:*\n{question}")
+        # Sam asks the question in his own voice
+        await _slack_post(channel, question, token=agent_token)
         answer = await _get_tina_answer(question)
-        await _slack_post(channel, f"*Tina answers:*\n{answer}")
+        # Tina answers as herself
+        await _slack_post(channel, answer, token=tina_token)
         return answer
 
     try:
@@ -124,14 +134,12 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         summary = result[:300] + "…" if len(result) > 300 else result
         print(f"[{display}] background task complete ({len(result)} chars)")
 
-        # Full result to agent's channel
-        full_msg = f"*{display} finished:*\n\n{result[:2000]}"
-        if len(result) > 2000:
-            full_msg += f"\n_(truncated — {len(result):,} chars total)_"
-        await _slack_post(channel, full_msg)
+        # Sam posts his own result
+        full_msg = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
+        await _slack_post(channel, full_msg, token=agent_token)
 
-        # Summary ping to #tina so Kai sees it without checking #sam
-        await _slack_post(SLACK_CHANNEL, f"*{display} just finished a task.* Full result in {channel}.\n\n_{summary}_")
+        # Tina pings #tina so Kai sees it without having to check #sam
+        await _slack_post(SLACK_CHANNEL, f"*{display} just finished.* Full result in {channel}.\n\n_{summary}_", token=tina_token)
 
         # Dashboard update
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
@@ -140,7 +148,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
 
     except Exception as e:
         print(f"[{display}] background task error: {e}")
-        await _slack_post(channel, f"*{display} hit an error:*\n{e}")
+        await _slack_post(channel, f"Hit an error: {e}", token=agent_token)
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Error: {e}"})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
 
