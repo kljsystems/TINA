@@ -274,17 +274,24 @@ export default function App() {
   const prevConn        = useRef(false)
   const responseDismiss = useRef(null)
 
-  // Auto-dismiss response box after 10s
+  // Show response box as soon as text arrives — no timer yet
   useEffect(() => {
     if (lastResponse) {
       setShowResponse(true)
       if (responseDismiss.current) clearTimeout(responseDismiss.current)
-      responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
     } else {
       setShowResponse(false)
+      if (responseDismiss.current) clearTimeout(responseDismiss.current)
     }
-    return () => clearTimeout(responseDismiss.current)
   }, [lastResponse])
+
+  // Start 10s dismiss countdown only after Tina finishes speaking
+  useEffect(() => {
+    if (tinaState === 'listening' && lastResponse) {
+      if (responseDismiss.current) clearTimeout(responseDismiss.current)
+      responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
+    }
+  }, [tinaState])
 
   // Clock
   useEffect(() => {
