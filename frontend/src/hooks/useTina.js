@@ -22,6 +22,41 @@ export function useTina() {
   const [lastTool,     setLastTool]     = useState({ name: '—', time: '—' })
   const [alert,        setAlert]        = useState(null)
   const [lastResponse, setLastResponse] = useState(null)
+  const [services,     setServices]     = useState(null)
+  const [turnCount,    setTurnCount]    = useState(0)
+  const [sessionStart]                  = useState(Date.now())
+  const [agentStatuses, setAgentStatuses] = useState({
+    tina:     { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
+    research: { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9' },
+    coding:   { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7' },
+  })
+
+  const activeAgentKeyRef = useRef(null)
+
+  const TOOL_LABELS = {
+    vault_search: 'VAULT SEARCH', vault_read: 'VAULT READ',
+    list_events: 'CALENDAR', create_event: 'CREATE EVENT',
+    update_event: 'UPDATE EVENT', delete_event: 'DELETE EVENT',
+    check_availability: 'CHECK AVAIL',
+    get_weather: 'WEATHER',
+    search: 'WEB SEARCH', wikipedia: 'WIKIPEDIA', news: 'NEWS FEED',
+    github_list_repos: 'GITHUB REPOS', github_get_repo: 'GITHUB REPO',
+    github_list_issues: 'GITHUB ISSUES', github_create_issue: 'CREATE ISSUE',
+    github_list_prs: 'GITHUB PRS', github_read_file: 'GITHUB FILE',
+    delegate_to_agent: 'DELEGATING',
+  }
+
+  // Poll service health every 30s
+  useEffect(() => {
+    const check = () =>
+      fetch('http://localhost:8000/api/status')
+        .then(r => r.json())
+        .then(setServices)
+        .catch(() => setServices(null))
+    check()
+    const t = setInterval(check, 30000)
+    return () => clearInterval(t)
+  }, [])
 
   const wsRef            = useRef(null)
   const alertTimerRef    = useRef(null)
@@ -79,21 +114,49 @@ export function useTina() {
       switch (data.type) {
         case 'state':
           setTinaState(data.state)
-          if (data.state === 'listening') setActiveAgent(null)
+          if (data.state === 'listening') {
+            setActiveAgent(null)
+            activeAgentKeyRef.current = null
+            setAgentStatuses(prev => ({
+              ...prev,
+              tina: { ...prev.tina, status: 'listening', tool: null },
+              research: { ...prev.research, status: 'idle', tool: null },
+              coding:   { ...prev.coding,   status: 'idle', tool: null },
+            }))
+          } else {
+            setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, status: data.state, tool: prev.tina.tool } }))
+          }
           break
-        case 'agent_active':
+        case 'agent_active': {
+          const key = data.agent?.toLowerCase()
+          activeAgentKeyRef.current = key
           setActiveAgent({ name: data.agent, color: data.color, glow: data.glow })
+          setAgentStatuses(prev => ({
+            ...prev,
+            tina: { ...prev.tina, tool: 'DELEGATING' },
+            [key]: prev[key] ? { ...prev[key], status: 'active', tool: 'STARTING...' } : prev[key],
+          }))
           break
+        }
         case 'agent_done':
           setActiveAgent(null)
+          activeAgentKeyRef.current = null
+          setAgentStatuses(prev => ({
+            ...prev,
+            tina: { ...prev.tina, tool: null },
+            research: { ...prev.research, status: 'idle', tool: null },
+            coding:   { ...prev.coding,   status: 'idle', tool: null },
+          }))
           break
         case 'heard':
           addLine('kai', data.text)
           setLastResponse(null)
+          setTurnCount(c => c + 1)
           break
         case 'response':
           addLine('tina', data.text)
           if (data.text && data.text.length > 100) setLastResponse(data.text)
+          setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, tool: null } }))
           break
         case 'audio_chunk':
           await scheduleChunk(data.data)
@@ -108,10 +171,21 @@ export function useTina() {
           }, delay * 1000 + 150)
           break
         }
-        case 'tool':
+        case 'tool': {
+          const label = TOOL_LABELS[data.name] ?? data.name.toUpperCase()
           setLastTool({ name: data.name, time: data.time ?? '—' })
           showAlert('tool: ' + data.name)
+          const key = activeAgentKeyRef.current
+          if (key) {
+            setAgentStatuses(prev => prev[key]
+              ? { ...prev, [key]: { ...prev[key], tool: label } }
+              : prev
+            )
+          } else {
+            setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, tool: label } }))
+          }
           break
+        }
         case 'system':
           if (data.voice)              setVoice(data.voice)
           if (data.user)               setUser(u => ({ ...u, name: data.user }))
@@ -189,6 +263,7 @@ export function useTina() {
   return {
     connected, tinaState, isRecording, activeAgent, conversation,
     stats, voice, user, lastTool, alert, lastResponse,
+    services, turnCount, sessionStart, agentStatuses,
     sendMessage, startRecording, stopRecording,
   }
 }

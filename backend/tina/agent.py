@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import anthropic
 from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL
-from tools import weather, vault, calendar_tool
+from tools import weather, vault, calendar_tool, github_tool, slack_tool
 from tina.agents.research import ResearchAgent
 from tina.agents.coding   import CodingAgent
 
@@ -17,7 +17,7 @@ _AGENTS: dict[str, type] = {
 }
 
 # ── Direct tools (Tina handles herself without delegating) ────────────────────
-_DIRECT_MODULES  = [weather, vault, calendar_tool]
+_DIRECT_MODULES  = [weather, vault, calendar_tool, github_tool, slack_tool]
 _DIRECT_DEFS     = [d for m in _DIRECT_MODULES for d in m.DEFINITIONS]
 _DIRECT_HANDLERS = {d["name"]: m.handle for m in _DIRECT_MODULES for d in m.DEFINITIONS}
 

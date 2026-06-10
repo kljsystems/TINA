@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json as _json
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime
 import httpx
 import anthropic
@@ -17,10 +18,20 @@ from config import (
     ANTHROPIC_API_KEY, MODEL,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
+    SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_CHANNEL,
 )
 from tina.agent import TinaAgent
 
-app = FastAPI(title="TINA Backend")
+_agent_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(_start_slack())
+    yield
+
+
+app = FastAPI(title="TINA Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -162,6 +173,18 @@ async def _write_memory(user_msg: str, tina_reply: str) -> None:
     await extract_and_write_notes(user_msg, tina_reply)
 
 
+@app.get("/api/status")
+async def get_status():
+    from config import DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY, OPENWEATHER_API_KEY
+    return {
+        "deepgram":    bool(DEEPGRAM_API_KEY),
+        "elevenlabs":  bool(ELEVENLABS_API_KEY),
+        "github":      bool(GITHUB_TOKEN),
+        "tavily":      bool(TAVILY_API_KEY),
+        "weather":     bool(OPENWEATHER_API_KEY),
+    }
+
+
 @app.post("/api/spawn-hud")
 async def spawn_hud():
     response = await _hud_client.messages.create(
@@ -172,6 +195,59 @@ async def spawn_hud():
     )
     text = response.content[0].text.replace("```json", "").replace("```", "").strip()
     return _json.loads(text)
+
+
+@app.post("/api/chat")
+async def chat_endpoint(body: dict):
+    """Shared chat entry point used by Slack and any other async callers."""
+    text   = body.get("text", "").strip()
+    source = body.get("source", "api")
+    if not text:
+        return {"reply": ""}
+    label = f"[{source.upper()}] {text}"
+    await broadcast({"type": "heard", "text": label})
+    async with _agent_lock:
+        reply = await agent.chat(text)
+    await broadcast({"type": "response", "text": reply})
+    asyncio.create_task(_write_memory(text, reply))
+    asyncio.create_task(_tts_stream(reply))
+    return {"reply": reply}
+
+
+async def _start_slack():
+    if not SLACK_BOT_TOKEN or not SLACK_APP_TOKEN:
+        print("[Slack] Tokens not configured — Slack listener not started.")
+        return
+    try:
+        from slack_bolt.async_app import AsyncApp as BoltApp
+        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+        import httpx as _httpx
+
+        bolt = BoltApp(token=SLACK_BOT_TOKEN)
+
+        @bolt.message("")
+        async def on_message(message, say, logger):
+            text = message.get("text", "").strip()
+            if not text or message.get("bot_id"):
+                return
+            try:
+                async with _httpx.AsyncClient(timeout=120) as client:
+                    r = await client.post(
+                        "http://localhost:8000/api/chat",
+                        json={"text": text, "source": "slack"},
+                    )
+                reply = r.json().get("reply", "")
+                if reply:
+                    await say(reply)
+            except Exception as e:
+                logger.error(f"Slack handler error: {e}")
+                await say(f"Error: {e}")
+
+        handler = AsyncSocketModeHandler(bolt, SLACK_APP_TOKEN)
+        print("[Slack] Socket Mode listener starting...")
+        await handler.start_async()
+    except Exception as e:
+        print(f"[Slack] Failed to start: {e}")
 
 
 @app.websocket("/ws")

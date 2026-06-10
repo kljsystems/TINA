@@ -18,6 +18,10 @@ GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
 GOOGLE_CSE_ID       = os.getenv("GOOGLE_CSE_ID", "")
 PICOVOICE_API_KEY   = os.getenv("PICOVOICE_API_KEY", "")
 DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY", "")
+GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN", "")
+SLACK_BOT_TOKEN     = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_APP_TOKEN     = os.getenv("SLACK_APP_TOKEN", "")
+SLACK_CHANNEL       = os.getenv("SLACK_CHANNEL", "#tina")
 
 # ── AI Model ──────────────────────────────────────────────────────────────────
 MODEL              = "claude-sonnet-4-6"        # specialist agents

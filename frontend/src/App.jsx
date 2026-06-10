@@ -4,7 +4,7 @@ import TinaFace, { STATE_CFG } from './components/TinaFace'
 
 // ── Palette ──────────────────────────────────────────────────────────────────
 const P  = '#8B5CF6'
-const PG = '#A78BFA'
+const PG = '#C4B5FD'
 const PD = '#4C1D95'
 const PF = '#1E1030'
 const PB = '#08040F'
@@ -142,6 +142,115 @@ function DynamicElement({ spec, onExpire }) {
   )
 }
 
+// ── Permanent HUD panels ─────────────────────────────────────────────────────
+
+function ConnectionStatus({ connected, services }) {
+  const rows = [
+    { name: 'WEBSOCKET',  ok: connected },
+    { name: 'DEEPGRAM',   ok: services?.deepgram },
+    { name: 'ELEVENLABS', ok: services?.elevenlabs },
+    { name: 'GITHUB',     ok: services?.github },
+    { name: 'TAVILY',     ok: services?.tavily },
+    { name: 'WEATHER',    ok: services?.weather },
+  ]
+  return (
+    <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
+      <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>CONNECTION STATUS</div>
+      {rows.map(({ name, ok }) => (
+        <div key={name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+          <span style={{ fontSize: 10, letterSpacing: 1, opacity: 0.7 }}>{name}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9, letterSpacing: 1 }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
+              background: ok === undefined ? '#6b7280' : ok ? '#4ade80' : '#ef4444',
+              boxShadow: ok === undefined ? 'none' : ok ? '0 0 6px #4ade80' : '0 0 6px #ef4444',
+            }} />
+            <span style={{ opacity: 0.5 }}>{ok === undefined ? 'UNKNOWN' : ok ? 'ONLINE' : 'OFFLINE'}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function AgentStatus({ agentStatuses, tinaState }) {
+  const agents = [
+    { key: 'tina',     label: 'TINA CORE' },
+    { key: 'research', label: 'RESEARCH'  },
+    { key: 'coding',   label: 'CODING'    },
+  ]
+  const tinaStatusMap = { listening: 'READY', thinking: 'PROCESSING', speaking: 'RESPONDING', standby: 'STANDBY', offline: 'OFFLINE' }
+
+  return (
+    <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
+      <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>AGENT STATUS</div>
+      {agents.map(({ key, label }) => {
+        const ag      = agentStatuses[key]
+        const isCore  = key === 'tina'
+        const active  = isCore ? tinaState !== 'offline' && tinaState !== 'standby' : ag.status === 'active'
+        const status  = isCore ? (tinaStatusMap[tinaState] ?? tinaState.toUpperCase()) : ag.status.toUpperCase()
+        const tool    = ag.tool
+
+        return (
+          <div key={key} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${P}11` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: tool ? 4 : 0 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%', display: 'inline-block',
+                  background: ag.color,
+                  boxShadow: active ? `0 0 8px ${ag.glow}` : 'none',
+                  opacity: active ? 1 : 0.3,
+                  animation: active && !tool ? 'agentpulse 2s ease-in-out infinite' : 'none',
+                }} />
+                <span style={{ fontSize: 10, letterSpacing: 1, color: active ? ag.color : PG, opacity: active ? 1 : 0.4 }}>
+                  {label}
+                </span>
+              </span>
+              <span style={{ fontSize: 9, letterSpacing: 1, opacity: 0.45 }}>{status}</span>
+            </div>
+            {tool && (
+              <div style={{
+                fontSize: 9, letterSpacing: 1, color: ag.color, opacity: 0.8,
+                paddingLeft: 11, animation: 'fadein 0.2s ease',
+              }}>
+                ↳ {tool}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function SessionStats({ turnCount, sessionStart }) {
+  const [uptime, setUptime] = useState('00:00:00')
+  useEffect(() => {
+    const t = setInterval(() => {
+      const ms = Date.now() - sessionStart
+      const h  = Math.floor(ms / 3600000)
+      const m  = Math.floor((ms % 3600000) / 60000)
+      const s  = Math.floor((ms % 60000) / 1000)
+      setUptime(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [sessionStart])
+
+  return (
+    <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
+      <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>SESSION</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+        <span style={{ fontSize: 10, letterSpacing: 1, opacity: 0.6 }}>UPTIME</span>
+        <span style={{ fontSize: 10, letterSpacing: 1, color: PG }}>{uptime}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: 10, letterSpacing: 1, opacity: 0.6 }}>EXCHANGES</span>
+        <span style={{ fontSize: 10, letterSpacing: 1, color: PG }}>{turnCount}</span>
+      </div>
+    </div>
+  )
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 let _eid = 0
@@ -150,16 +259,30 @@ const ts = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const { connected, tinaState, isRecording, activeAgent, conversation, lastResponse, sendMessage, startRecording, stopRecording } = useTina()
+  const { connected, tinaState, isRecording, activeAgent, conversation, lastResponse, services, turnCount, sessionStart, agentStatuses, sendMessage, startRecording, stopRecording } = useTina()
 
-  const [elements, setElements] = useState([])
-  const [loading,  setLoading]  = useState(false)
-  const [log,      setLog]      = useState(['System initialised', 'Neural core loading...'])
-  const [input,    setInput]    = useState('')
-  const [time,     setTime]     = useState(new Date())
-  const inputRef   = useRef(null)
-  const convoLen   = useRef(0)
-  const prevConn   = useRef(false)
+  const [elements,       setElements]       = useState([])
+  const [loading,        setLoading]        = useState(false)
+  const [log,            setLog]            = useState(['System initialised', 'Neural core loading...'])
+  const [input,          setInput]          = useState('')
+  const [time,           setTime]           = useState(new Date())
+  const [showResponse,   setShowResponse]   = useState(false)
+  const inputRef        = useRef(null)
+  const convoLen        = useRef(0)
+  const prevConn        = useRef(false)
+  const responseDismiss = useRef(null)
+
+  // Auto-dismiss response box after 10s
+  useEffect(() => {
+    if (lastResponse) {
+      setShowResponse(true)
+      if (responseDismiss.current) clearTimeout(responseDismiss.current)
+      responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
+    } else {
+      setShowResponse(false)
+    }
+    return () => clearTimeout(responseDismiss.current)
+  }, [lastResponse])
 
   // Clock
   useEffect(() => {
@@ -220,114 +343,129 @@ export default function App() {
 
   const cfg       = STATE_CFG[tinaState] ?? STATE_CFG.listening
   const isOffline = tinaState === 'offline'
-  const dispLabel = activeAgent ? `→ ${activeAgent.name.toUpperCase()}` : cfg.label
-  const dispSub   = activeAgent ? 'delegating to specialist' : cfg.sub
+  const dispLabel = activeAgent ? `→ ${activeAgent.name.toUpperCase()}` : isRecording ? 'LISTENING' : cfg.label
+  const dispSub   = activeAgent ? 'delegating to specialist' : isRecording ? 'Recording...' : cfg.sub
 
   return (
     <div style={{
-      minHeight: '100vh', background: PB, display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
+      height: '100vh', overflow: 'hidden',
+      background: PB, display: 'flex', flexDirection: 'column',
       fontFamily: "'Courier New',monospace", color: PG,
-      padding: '12px 16px', position: 'relative', overflow: 'hidden',
+      position: 'relative',
     }}>
 
       {/* Grid background */}
       <div style={{
-        position: 'absolute', inset: 0, opacity: 0.04,
+        position: 'absolute', inset: 0, opacity: 0.06, pointerEvents: 'none',
         backgroundImage: `linear-gradient(${P} 1px,transparent 1px),linear-gradient(90deg,${P} 1px,transparent 1px)`,
         backgroundSize: '40px 40px',
       }} />
 
       {/* Corner brackets */}
       {[
-        { top: 18, left:  18, borderTop:    `1px solid ${P}`, borderLeft:   `1px solid ${P}` },
-        { top: 18, right: 18, borderTop:    `1px solid ${P}`, borderRight:  `1px solid ${P}` },
-        { bottom: 18, left:  18, borderBottom: `1px solid ${P}`, borderLeft:   `1px solid ${P}` },
-        { bottom: 18, right: 18, borderBottom: `1px solid ${P}`, borderRight:  `1px solid ${P}` },
+        { top: 10, left:  10, borderTop: `1px solid ${P}`, borderLeft:  `1px solid ${P}` },
+        { top: 10, right: 10, borderTop: `1px solid ${P}`, borderRight: `1px solid ${P}` },
+        { bottom: 10, left:  10, borderBottom: `1px solid ${P}`, borderLeft:  `1px solid ${P}` },
+        { bottom: 10, right: 10, borderBottom: `1px solid ${P}`, borderRight: `1px solid ${P}` },
       ].map((s, i) => (
-        <div key={i} style={{ position: 'absolute', width: 26, height: 26, opacity: isOffline ? 0.15 : 0.4, ...s }} />
+        <div key={i} style={{ position: 'absolute', width: 22, height: 22, opacity: isOffline ? 0.2 : 0.5, ...s }} />
       ))}
-
-      {/* Clock */}
-      <div style={{ position: 'absolute', top: 22, right: 38, textAlign: 'right', opacity: 0.3, fontSize: 11, letterSpacing: 2 }}>
-        <div>{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
-        <div style={{ fontSize: 9, marginTop: 3 }}>{time.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' })}</div>
-      </div>
 
       {/* Offline overlay */}
       {isOffline && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 20, display: 'flex',
           alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12,
-          background: 'rgba(8,4,15,0.85)',
+          background: 'rgba(8,4,15,0.88)',
         }}>
           <div style={{ fontSize: 28, letterSpacing: 8, color: '#E24B4A', opacity: 0.8, animation: 'offblink 2s ease-in-out infinite' }}>
             TINA OFFLINE
           </div>
           <div style={{ fontSize: 9, letterSpacing: 3, color: '#E24B4A', opacity: 0.4 }}>
-            START BACKEND — uvicorn backend.main:app --port 8000
+            START BACKEND — python start.py
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ textAlign: 'center', marginBottom: 10, zIndex: 1 }}>
-        <div style={{ fontSize: 11, letterSpacing: 6, opacity: 0.35, marginBottom: 4 }}>NEURAL CORE v2.0 · CLAUDE SONNET 4.6</div>
-        <div style={{ fontSize: 28, letterSpacing: 12, fontWeight: 'bold', color: '#fff', textShadow: `0 0 30px ${P}` }}>T I N A</div>
-        <div style={{ fontSize: 9, letterSpacing: 4, opacity: 0.3, marginTop: 3 }}>
-          {connected ? 'WEBSOCKET ACTIVE' : 'CONNECTING...'}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div style={{
+        flexShrink: 0, zIndex: 1,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 28px', borderBottom: `1px solid ${P}44`,
+      }}>
+        <div style={{ flex: 1, fontSize: 9, letterSpacing: 3, opacity: 0.55 }}>
+          NEURAL CORE v2.0 · CLAUDE SONNET 4.6
+        </div>
+        <div style={{ fontSize: 22, letterSpacing: 10, fontWeight: 'bold', color: '#fff', textShadow: `0 0 24px ${P}`, textAlign: 'center' }}>
+          T I N A
+        </div>
+        <div style={{ flex: 1, textAlign: 'right', fontSize: 9, letterSpacing: 2, opacity: 0.55 }}>
+          <div>{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+          <div style={{ marginTop: 2 }}>{connected ? 'WS ACTIVE' : 'CONNECTING...'}</div>
         </div>
       </div>
 
-      {/* Main body */}
-      <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', zIndex: 1, width: '100%', maxWidth: 1300 }}>
+      {/* ── Main 3-column body ──────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', gap: 12, padding: '12px 16px', zIndex: 1 }}>
 
-        {/* Left column — dynamic HUD elements */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 240 }}>
+        {/* Left column — activity log + HUD elements */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'hidden', minWidth: 200 }}>
+
+          {/* Activity log — permanent */}
+          <div style={{ flexShrink: 0, border: `1px solid ${P}22`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc` }}>
+            <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>ACTIVITY LOG</div>
+            {log.map((l, i) => (
+              <div key={i} style={{ fontSize: 10, letterSpacing: 0.3, opacity: Math.max(0.35, 1 - i * 0.09), marginBottom: 3, color: i === 0 ? PG : PG + '88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {l}
+              </div>
+            ))}
+          </div>
+
+          {/* Dynamic HUD left */}
           {left.map(el => (
             <DynamicElement key={el.id} spec={el} onExpire={() => removeElement(el.id)} />
           ))}
           {left.length === 0 && (
-            <div style={{ border: `1px dashed ${P}18`, borderRadius: 4, padding: 32, textAlign: 'center', opacity: 0.12, fontSize: 10, letterSpacing: 2 }}>
+            <div style={{ flex: 1, border: `1px dashed ${P}10`, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.1, fontSize: 10, letterSpacing: 2 }}>
               HUD ZONE A
             </div>
           )}
         </div>
 
-        {/* Centre */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+        {/* Centre column — face + controls */}
+        <div style={{ flexShrink: 0, width: 380, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
 
-          {/* Face + state label */}
-          <div style={{ position: 'relative' }}>
-            <TinaFace state={tinaState} />
-            <div style={{ position: 'absolute', bottom: 58, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
-              <div style={{ fontSize: 12, letterSpacing: 5, color: activeAgent ? activeAgent.color : PG, opacity: 0.9, transition: 'color 0.4s' }}>{dispLabel}</div>
-              <div style={{ fontSize: 9, letterSpacing: 2, opacity: 0.35, marginTop: 3 }}>{dispSub}</div>
+          {/* Face */}
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <TinaFace state={tinaState} size={340} />
+            <div style={{ position: 'absolute', bottom: 50, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
+              <div style={{ fontSize: 11, letterSpacing: 5, color: activeAgent ? activeAgent.color : PG, opacity: 0.9, transition: 'color 0.4s' }}>{dispLabel}</div>
+              <div style={{ fontSize: 9, letterSpacing: 2, opacity: 0.35, marginTop: 2 }}>{dispSub}</div>
             </div>
           </div>
 
           {/* Active agent panel */}
           <div style={{
-            width: '100%', overflow: 'hidden',
-            maxHeight: activeAgent ? 100 : 0,
+            width: '100%', overflow: 'hidden', flexShrink: 0,
+            maxHeight: activeAgent ? 80 : 0,
             opacity: activeAgent ? 1 : 0,
             transition: 'max-height 0.4s ease, opacity 0.3s ease',
           }}>
             {activeAgent && (
               <div style={{
-                display: 'flex', alignItems: 'center', gap: 14,
+                display: 'flex', alignItems: 'center', gap: 12,
                 border: `1px solid ${activeAgent.color}44`,
-                borderRadius: 4, padding: '10px 16px',
+                borderRadius: 4, padding: '8px 14px',
                 background: `${PF}cc`,
                 boxShadow: `0 0 20px ${activeAgent.color}22`,
               }}>
-                <TinaFace state="thinking" size={72} ringColor={activeAgent.glow} glowColor={activeAgent.color} />
+                <TinaFace state="thinking" size={60} ringColor={activeAgent.glow} glowColor={activeAgent.color} />
                 <div>
-                  <div style={{ fontSize: 11, letterSpacing: 3, color: activeAgent.color, marginBottom: 4 }}>
+                  <div style={{ fontSize: 10, letterSpacing: 3, color: activeAgent.color, marginBottom: 3 }}>
                     {activeAgent.name.toUpperCase()} AGENT
                   </div>
                   <div style={{ fontSize: 9, letterSpacing: 1, color: activeAgent.color, opacity: 0.5, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ animation: 'micpulse 1s ease-in-out infinite', display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: activeAgent.color }} />
+                    <span style={{ animation: 'micpulse 1s ease-in-out infinite', display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: activeAgent.color }} />
                     ACTIVE
                   </div>
                 </div>
@@ -335,41 +473,10 @@ export default function App() {
             )}
           </div>
 
-          {/* Response text box */}
-          {lastResponse && (
-            <div style={{
-              width: '100%',
-              border: `1px solid ${P}55`,
-              borderRadius: 4,
-              padding: '12px 14px',
-              background: `${PF}cc`,
-              boxShadow: `0 0 20px ${P}22`,
-              animation: 'fadein 0.3s ease',
-            }}>
-              <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.5, marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
-                <span>TINA RESPONSE</span>
-                <span style={{ color: P, opacity: 0.8 }}>◆ LIVE</span>
-              </div>
-              <div style={{ fontSize: 11, lineHeight: 1.7, letterSpacing: 0.3, color: PG, opacity: 0.9, whiteSpace: 'pre-wrap' }}>
-                {lastResponse}
-              </div>
-            </div>
-          )}
-
-          {/* Activity log */}
-          <div style={{ width: '100%', border: `1px solid ${P}22`, borderRadius: 4, padding: '10px 14px', background: `${PF}88` }}>
-            <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.4, marginBottom: 6 }}>ACTIVITY LOG</div>
-            {log.map((l, i) => (
-              <div key={i} style={{ fontSize: 10, letterSpacing: 0.3, opacity: 1 - i * 0.11, marginBottom: 2, color: i === 0 ? PG : PG + '88' }}>
-                {l}
-              </div>
-            ))}
-          </div>
-
           {/* Input + controls */}
-          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <form onSubmit={handleSend} style={{ display: 'flex', gap: 7 }}>
-              <span style={{ fontSize: 14, color: P, opacity: 0.7, alignSelf: 'center', flexShrink: 0 }}>&gt;</span>
+          <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0, marginTop: 'auto' }}>
+            <form onSubmit={handleSend} style={{ display: 'flex', gap: 6 }}>
+              <span style={{ fontSize: 13, color: P, opacity: 0.7, alignSelf: 'center', flexShrink: 0 }}>&gt;</span>
               <input
                 ref={inputRef}
                 value={input}
@@ -379,8 +486,8 @@ export default function App() {
                 autoFocus
                 style={{
                   flex: 1, background: `${PF}99`, border: `1px solid ${P}33`,
-                  borderRadius: 3, padding: '7px 10px', color: PG,
-                  fontFamily: "'Courier New',monospace", fontSize: 13, letterSpacing: 1,
+                  borderRadius: 3, padding: '6px 10px', color: PG,
+                  fontFamily: "'Courier New',monospace", fontSize: 12, letterSpacing: 1,
                   outline: 'none',
                 }}
               />
@@ -395,11 +502,11 @@ export default function App() {
                 title="Hold to talk"
                 style={{
                   ...btnStyle(connected),
-                  background:  isRecording ? '#ef444433' : connected ? `${P}33` : 'transparent',
-                  border:      `1px solid ${isRecording ? '#ef4444' : connected ? P : P + '33'}`,
-                  color:       isRecording ? '#ef4444' : PG,
-                  animation:   isRecording ? 'micpulse 0.8s ease-in-out infinite' : 'none',
-                  flexShrink:  0,
+                  background: isRecording ? '#ef444433' : connected ? `${P}33` : 'transparent',
+                  border:     `1px solid ${isRecording ? '#ef4444' : connected ? P : P + '33'}`,
+                  color:      isRecording ? '#ef4444' : PG,
+                  animation:  isRecording ? 'micpulse 0.8s ease-in-out infinite' : 'none',
+                  flexShrink: 0,
                 }}
               >
                 {isRecording ? '■ REC' : '● MIC'}
@@ -408,16 +515,12 @@ export default function App() {
                 SEND
               </button>
             </form>
-
-            <div style={{ display: 'flex', gap: 7 }}>
-              <button onClick={spawnHud} disabled={loading || !connected} style={{
-                ...btnStyle(connected && !loading), flex: 1,
-                boxShadow: connected && !loading ? `0 0 10px ${P}33` : 'none',
-              }}>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={spawnHud} disabled={loading || !connected} style={{ ...btnStyle(connected && !loading), flex: 1 }}>
                 {loading ? 'THINKING...' : '✦ SPAWN HUD'}
               </button>
               <button onClick={() => { setElements(e => e.filter(x => x.persistent)); addLog('Ephemeral cleared') }} style={btnStyle(true, true)}>
-                CLEAR TEMP
+                CLEAR
               </button>
               <button onClick={() => { setElements([]); addLog('HUD reset') }} style={btnStyle(false, true)}>
                 RESET
@@ -426,35 +529,68 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right column — dynamic HUD elements */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 240 }}>
+        {/* Right column — status panels + response box + HUD elements */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'hidden', minWidth: 200 }}>
+
+          <ConnectionStatus connected={connected} services={services} />
+          <AgentStatus agentStatuses={agentStatuses} tinaState={tinaState} />
+          <SessionStats turnCount={turnCount} sessionStart={sessionStart} />
+
+          {/* Response text box */}
+          {showResponse && lastResponse && (
+            <div style={{
+              flexShrink: 0,
+              border: `1px solid ${P}55`,
+              borderRadius: 4,
+              padding: '12px 14px',
+              background: `${PF}cc`,
+              boxShadow: `0 0 20px ${P}22`,
+              animation: 'fadein 0.4s ease',
+              maxHeight: '45%',
+              overflow: 'hidden',
+            }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.5, marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
+                <span>TINA RESPONSE</span>
+                <span style={{ color: P, opacity: 0.8 }}>◆ LIVE</span>
+              </div>
+              <div style={{ fontSize: 11, lineHeight: 1.7, letterSpacing: 0.3, color: PG, opacity: 0.9, whiteSpace: 'pre-wrap', overflow: 'hidden' }}>
+                {lastResponse}
+              </div>
+            </div>
+          )}
+
+          {/* Dynamic HUD right */}
           {right.map(el => (
             <DynamicElement key={el.id} spec={el} onExpire={() => removeElement(el.id)} />
           ))}
-          {right.length === 0 && (
-            <div style={{ border: `1px dashed ${P}18`, borderRadius: 4, padding: 32, textAlign: 'center', opacity: 0.12, fontSize: 10, letterSpacing: 2 }}>
+          {right.length === 0 && !lastResponse && (
+            <div style={{ flex: 1, border: `1px dashed ${P}10`, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.1, fontSize: 10, letterSpacing: 2 }}>
               HUD ZONE B
             </div>
           )}
         </div>
       </div>
 
-      {/* Footer status bar */}
+      {/* ── Footer status bar ───────────────────────────────────────────────── */}
       <div style={{
-        position: 'absolute', bottom: 16, left: 38, right: 38,
+        flexShrink: 0, zIndex: 1,
         display: 'flex', justifyContent: 'space-between',
-        fontSize: 9, letterSpacing: 2, opacity: 0.25,
+        padding: '6px 28px', borderTop: `1px solid ${P}44`,
+        fontSize: 9, letterSpacing: 2, opacity: 0.45,
       }}>
         <span>WS: {connected ? 'CONNECTED' : 'OFFLINE'}</span>
         <span>STATE: {cfg.label}</span>
         <span>ELEMENTS: {elements.length} ({elements.filter(e => e.persistent).length} PINNED)</span>
-        <span>DEEPGRAM · ELEVENLABS · TAVILY</span>
+        <span>DEEPGRAM · ELEVENLABS · TAVILY · GITHUB</span>
       </div>
 
       <style>{`
-        @keyframes offblink { 0%,100%{opacity:0.8} 50%{opacity:0.3} }
-        @keyframes micpulse { 0%,100%{box-shadow:0 0 6px #ef4444} 50%{box-shadow:0 0 18px #ef4444,0 0 6px #ef444488} }
-        @keyframes fadein { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+        * { box-sizing: border-box; }
+        body { margin: 0; overflow: hidden; }
+        @keyframes offblink   { 0%,100%{opacity:0.8} 50%{opacity:0.3} }
+        @keyframes micpulse   { 0%,100%{box-shadow:0 0 6px #ef4444} 50%{box-shadow:0 0 18px #ef4444,0 0 6px #ef444488} }
+        @keyframes fadein     { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes agentpulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
       `}</style>
     </div>
   )
