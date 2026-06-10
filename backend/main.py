@@ -49,6 +49,10 @@ app.add_middleware(
 
 connections: list[WebSocket] = []
 
+# Per-agent queues for Kai's direct replies in agent channels
+_agent_answer_queues: dict[str, asyncio.Queue] = {}
+_channel_name_cache:  dict[str, str]           = {}  # channel ID → "#name"
+
 
 async def broadcast(data: dict):
     dead = []
@@ -77,6 +81,22 @@ async def _slack_post(channel: str, message: str, token: str | None = None):
         await asyncio.to_thread(_post)
     except Exception as e:
         print(f"[Slack] post to {channel} failed: {e}")
+
+
+async def _resolve_channel_name(channel_id: str) -> str:
+    """Resolve a Slack channel ID to its #name, with caching."""
+    if channel_id in _channel_name_cache:
+        return _channel_name_cache[channel_id]
+    try:
+        def _fetch():
+            from slack_sdk import WebClient
+            info = WebClient(token=SLACK_BOT_TOKEN).conversations_info(channel=channel_id)
+            return "#" + info["channel"]["name"]
+        name = await asyncio.to_thread(_fetch)
+        _channel_name_cache[channel_id] = name
+        return name
+    except Exception:
+        return channel_id
 
 
 async def _get_tina_answer(question: str) -> str:
@@ -119,12 +139,29 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     await _slack_post(channel, f"*Task from Tina:*\n\n{task}", token=tina_token)
 
     async def question_handler(question: str) -> str:
-        # Sam asks the question in his own voice
+        # Sam posts the question as himself
         await _slack_post(channel, question, token=agent_token)
-        answer = await _get_tina_answer(question)
-        # Tina answers as herself
-        await _slack_post(channel, answer, token=tina_token)
-        return answer
+
+        # Tina generates a suggested answer from context
+        tina_answer = await _get_tina_answer(question)
+        await _slack_post(
+            channel,
+            f"{tina_answer}\n\n_Kai — reply here within 90 seconds to override._",
+            token=tina_token,
+        )
+
+        # Open a queue for Kai to drop a reply into
+        q: asyncio.Queue = asyncio.Queue()
+        _agent_answer_queues[channel] = q
+        try:
+            kai_answer = await asyncio.wait_for(q.get(), timeout=90)
+            await _slack_post(channel, "Got it, thanks.", token=agent_token)
+            return kai_answer
+        except asyncio.TimeoutError:
+            # Kai didn't reply — Sam proceeds with Tina's answer
+            return tina_answer
+        finally:
+            _agent_answer_queues.pop(channel, None)
 
     try:
         print(f"[{display}] background task started: {task[:80]}...")
@@ -334,6 +371,15 @@ async def _start_slack():
             text = message.get("text", "").strip()
             if not text or message.get("bot_id"):
                 return
+
+            # Resolve channel ID to name and check if an agent is waiting for a reply
+            channel_id   = message.get("channel", "")
+            channel_name = await _resolve_channel_name(channel_id)
+            if channel_name in _agent_answer_queues:
+                await _agent_answer_queues[channel_name].put(text)
+                return
+
+            # Otherwise route to Tina
             try:
                 async with _httpx.AsyncClient(timeout=120) as client:
                     r = await client.post(
