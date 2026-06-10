@@ -15,18 +15,19 @@ import anthropic
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from config import (
-    ANTHROPIC_API_KEY, MODEL,
+    ANTHROPIC_API_KEY, MODEL, ORCHESTRATOR_MODEL, SYSTEM_PROMPT,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
-    SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_CHANNEL,
+    SLACK_BOT_TOKEN, SLACK_APP_TOKEN,
+    SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH,
 )
 from tina.agent import TinaAgent
 
 _agent_lock = asyncio.Lock()
 
 _AGENT_META = {
-    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9"},
-    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7"},
+    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH},
+    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM},
 }
 
 
@@ -63,44 +64,84 @@ async def broadcast(data: dict):
 
 # ── Background agent runner ───────────────────────────────────────────────────
 
+async def _slack_post(channel: str, message: str):
+    """Post a message to a Slack channel, swallowing errors so they never crash an agent task."""
+    from tools.slack_tool import handle as slack_handle
+    try:
+        await asyncio.to_thread(slack_handle, "slack_send", {"channel": channel, "message": message})
+    except Exception as e:
+        print(f"[Slack] post to {channel} failed: {e}")
+
+
+async def _get_tina_answer(question: str) -> str:
+    """Answer a clarifying question from an agent using Tina's current conversation context."""
+    try:
+        client   = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        messages = list(agent.history) + [{
+            "role":    "user",
+            "content": (
+                f"One of your specialist agents has a clarifying question:\n\n{question}\n\n"
+                "Answer directly and concisely. If you genuinely don't know, say so and tell the agent to use its best judgement."
+            ),
+        }]
+        response = await client.messages.create(
+            model=ORCHESTRATOR_MODEL,
+            max_tokens=512,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+        )
+        return next((b.text for b in response.content if hasattr(b, "text")), "")
+    except Exception as e:
+        print(f"[_get_tina_answer] error: {e}")
+        return "I couldn't get a clear answer right now — use your best judgement and proceed."
+
+
 async def background_runner(agent_key: str, cls, task: str, on_tool):
     """Called by TinaAgent._dispatch — launches specialist as a fire-and-forget task."""
     asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool))
 
 
 async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
-    """Runs a specialist agent independently. Notifies Kai via Slack + dashboard on completion."""
-    meta    = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA"})
+    """Runs a specialist agent independently with Slack as the conversation channel."""
+    meta    = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL})
     display = meta["display"]
+    channel = meta.get("channel", SLACK_CHANNEL)
+
+    # Post task brief to agent's own channel so Kai can observe
+    await _slack_post(channel, f"*Task from Tina:*\n\n{task}")
+
+    async def question_handler(question: str) -> str:
+        await _slack_post(channel, f"*{display} asks:*\n{question}")
+        answer = await _get_tina_answer(question)
+        await _slack_post(channel, f"*Tina answers:*\n{answer}")
+        return answer
 
     try:
         print(f"[{display}] background task started: {task[:80]}...")
         specialist = cls()
-        result     = await specialist.run(task, on_tool=on_tool)
+        result     = await specialist.run(task, on_tool=on_tool, question_handler=question_handler)
 
         summary = result[:300] + "…" if len(result) > 300 else result
         print(f"[{display}] background task complete ({len(result)} chars)")
 
-        # Update dashboard: clear running state, show result
-        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
-        await broadcast({"type": "response", "text": f"{display} just finished a task:\n\n{summary}"})
-        asyncio.create_task(_tts_stream(f"{display} just finished. Check Slack for the full result."))
-
-        # Full result to Slack
-        slack_msg = f"*{display} finished a task:*\n\n{result[:2000]}"
+        # Full result to agent's channel
+        full_msg = f"*{display} finished:*\n\n{result[:2000]}"
         if len(result) > 2000:
-            slack_msg += f"\n\n_(result truncated — {len(result)} chars total)_"
-        from tools.slack_tool import handle as slack_handle
-        await asyncio.to_thread(slack_handle, "slack_send", {"message": slack_msg})
+            full_msg += f"\n_(truncated — {len(result):,} chars total)_"
+        await _slack_post(channel, full_msg)
+
+        # Summary ping to #tina so Kai sees it without checking #sam
+        await _slack_post(SLACK_CHANNEL, f"*{display} just finished a task.* Full result in {channel}.\n\n_{summary}_")
+
+        # Dashboard update
+        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
+        await broadcast({"type": "response", "text": f"{display} finished — check {channel} in Slack"})
+        asyncio.create_task(_tts_stream(f"{display} just finished. Check {channel} in Slack for the result."))
 
     except Exception as e:
         print(f"[{display}] background task error: {e}")
-        await broadcast({
-            "type": "agent_background_done",
-            "agent": agent_key,
-            "display": display,
-            "summary": f"Error: {e}",
-        })
+        await _slack_post(channel, f"*{display} hit an error:*\n{e}")
+        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Error: {e}"})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
 
 

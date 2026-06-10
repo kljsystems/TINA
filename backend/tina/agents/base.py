@@ -1,9 +1,12 @@
 import sys
 import os
+import re
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL
+
+_QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
 
 
 class BaseAgent:
@@ -22,15 +25,20 @@ class BaseAgent:
         self._definitions = [d for m in self.tool_modules for d in m.DEFINITIONS]
         self._handlers    = {d["name"]: m.handle for m in self.tool_modules for d in m.DEFINITIONS}
 
-    async def run(self, task: str, on_tool=None) -> str:
-        """Run the agent on a task and return the result as a string."""
+    async def run(self, task: str, on_tool=None, question_handler=None) -> str:
+        """
+        Run the agent on a task and return the result as a string.
+        If question_handler is provided and the agent writes [QUESTION: ...],
+        the handler is called and the answer is fed back before continuing.
+        """
         import asyncio
-        history = [{"role": "user", "content": task}]
+        history   = [{"role": "user", "content": task}]
+        qa_rounds = 0
 
         while True:
             kwargs = dict(
                 model=MODEL,
-                max_tokens=2048,
+                max_tokens=4096,
                 system=self.system,
                 messages=history,
             )
@@ -60,4 +68,20 @@ class BaseAgent:
                 history.append({"role": "user", "content": tool_results})
 
             else:
-                return next((b.text for b in response.content if hasattr(b, "text")), "")
+                reply = next((b.text for b in response.content if hasattr(b, "text")), "")
+
+                # Check if agent is asking a clarifying question
+                if question_handler and qa_rounds < 5:
+                    match = _QUESTION_RE.search(reply)
+                    if match:
+                        question = match.group(1).strip()
+                        qa_rounds += 1
+                        answer = await question_handler(question)
+                        history.append({"role": "assistant", "content": response.content})
+                        history.append({
+                            "role":    "user",
+                            "content": f"Tina's answer: {answer}\n\nContinue with the task.",
+                        })
+                        continue
+
+                return reply
