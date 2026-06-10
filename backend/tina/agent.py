@@ -25,10 +25,14 @@ _DIRECT_HANDLERS = {d["name"]: m.handle for m in _DIRECT_MODULES for d in m.DEFI
 _DELEGATE_TOOL = {
     "name":        "delegate_to_agent",
     "description": (
-        "Delegate a task to a specialist agent and get back a detailed result. "
+        "Delegate a task to a specialist agent. "
+        "In WebSocket mode the agent runs as an independent background task — Kai is notified via Slack and the dashboard when done. "
         "Use 'research' for web searches, news, Wikipedia lookups, or any fact-finding. "
-        "Use 'coding' for writing code, debugging, code review, or technical explanations. "
-        "Write a clear task brief — include all context the agent needs."
+        "Use 'coding' (Sam) for ANYTHING code-related: writing code, debugging, code review, "
+        "architecture decisions, explaining how code works, fixing bugs, choosing a library, "
+        "setting up a project, technical how-to questions, or anything involving a programming language. "
+        "When in doubt about whether something is code-related, send it to Sam. "
+        "Write a clear task brief — include all relevant context, repo names, file paths, and what outcome is needed."
     ),
     "input_schema": {
         "type": "object",
@@ -51,11 +55,16 @@ _ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL]
 
 
 class TinaAgent:
-    def __init__(self):
-        self.client  = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        self.history: list[dict] = []
+    def __init__(self, background_runner=None):
+        self.client            = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self.history:list[dict] = []
+        self.background_runner = background_runner  # injected by main.py
 
-    async def chat(self, message: str, on_tool=None, on_agent_done=None) -> str:
+    @property
+    def has_background_runner(self) -> bool:
+        return self.background_runner is not None
+
+    async def chat(self, message: str, on_tool=None, on_agent_done=None, background: bool = True) -> str:
         self.history.append({"role": "user", "content": message})
 
         while True:
@@ -82,7 +91,7 @@ class TinaAgent:
                         continue
                     if on_tool:
                         await on_tool(block.name, block.input)
-                    result = await self._dispatch(block.name, block.input, on_tool, on_agent_done)
+                    result = await self._dispatch(block.name, block.input, on_tool, on_agent_done, background)
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
@@ -96,13 +105,23 @@ class TinaAgent:
                 self.history.append({"role": "assistant", "content": response.content})
                 return reply
 
-    async def _dispatch(self, name: str, inputs: dict, on_tool=None, on_agent_done=None) -> str:
+    async def _dispatch(self, name: str, inputs: dict, on_tool=None, on_agent_done=None, background: bool = True) -> str:
         if name == "delegate_to_agent":
-            agent_key  = inputs.get("agent", "")
-            task       = inputs.get("task", "")
-            cls        = _AGENTS.get(agent_key)
+            agent_key = inputs.get("agent", "")
+            task      = inputs.get("task", "")
+            cls       = _AGENTS.get(agent_key)
             if not cls:
                 return f"Unknown agent: {agent_key}"
+
+            if self.background_runner and background:
+                # Non-blocking: agent runs independently, Tina continues immediately
+                await self.background_runner(agent_key, cls, task, on_tool)
+                return (
+                    f"Background task dispatched to {agent_key}. "
+                    "Kai will be notified via Slack and the dashboard when complete."
+                )
+
+            # Blocking fallback (Slack, /api/chat, background=False)
             specialist = cls()
             result     = await specialist.run(task, on_tool=on_tool)
             if on_agent_done:

@@ -28,7 +28,7 @@ export function useTina() {
   const [agentStatuses, setAgentStatuses] = useState({
     tina:     { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
     research: { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9' },
-    coding:   { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7' },
+    coding:   { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7', label: 'Sam' },
   })
 
   const activeAgentKeyRef = useRef(null)
@@ -136,6 +136,27 @@ export function useTina() {
             tina: { ...prev.tina, tool: 'DELEGATING' },
             [key]: prev[key] ? { ...prev[key], status: 'active', tool: 'STARTING...' } : prev[key],
           }))
+          break
+        }
+        case 'agent_background_start': {
+          // Agent launched in background — Tina stays free, agent runs independently
+          const key = data.key || data.agent?.toLowerCase()
+          activeAgentKeyRef.current = key
+          setAgentStatuses(prev => ({
+            ...prev,
+            [key]: prev[key] ? { ...prev[key], status: 'running', tool: 'RUNNING...' } : prev[key],
+          }))
+          break
+        }
+        case 'agent_background_done': {
+          // Background agent finished — show result, clear running state
+          const key = data.agent?.toLowerCase()
+          activeAgentKeyRef.current = null
+          setAgentStatuses(prev => ({
+            ...prev,
+            [key]: prev[key] ? { ...prev[key], status: 'idle', tool: null } : prev[key],
+          }))
+          if (data.summary) setLastResponse(`${data.display} finished:\n\n${data.summary}`)
           break
         }
         case 'agent_done':

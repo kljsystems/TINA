@@ -24,6 +24,11 @@ from tina.agent import TinaAgent
 
 _agent_lock = asyncio.Lock()
 
+_AGENT_META = {
+    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9"},
+    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7"},
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,7 +47,65 @@ app.add_middleware(
 )
 
 connections: list[WebSocket] = []
-agent = TinaAgent()
+
+
+async def broadcast(data: dict):
+    dead = []
+    for ws in connections:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        if ws in connections:
+            connections.remove(ws)
+
+
+# ── Background agent runner ───────────────────────────────────────────────────
+
+async def background_runner(agent_key: str, cls, task: str, on_tool):
+    """Called by TinaAgent._dispatch — launches specialist as a fire-and-forget task."""
+    asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool))
+
+
+async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
+    """Runs a specialist agent independently. Notifies Kai via Slack + dashboard on completion."""
+    meta    = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA"})
+    display = meta["display"]
+
+    try:
+        print(f"[{display}] background task started: {task[:80]}...")
+        specialist = cls()
+        result     = await specialist.run(task, on_tool=on_tool)
+
+        summary = result[:300] + "…" if len(result) > 300 else result
+        print(f"[{display}] background task complete ({len(result)} chars)")
+
+        # Update dashboard: clear running state, show result
+        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
+        await broadcast({"type": "response", "text": f"{display} just finished a task:\n\n{summary}"})
+        asyncio.create_task(_tts_stream(f"{display} just finished. Check Slack for the full result."))
+
+        # Full result to Slack
+        slack_msg = f"*{display} finished a task:*\n\n{result[:2000]}"
+        if len(result) > 2000:
+            slack_msg += f"\n\n_(result truncated — {len(result)} chars total)_"
+        from tools.slack_tool import handle as slack_handle
+        await asyncio.to_thread(slack_handle, "slack_send", {"message": slack_msg})
+
+    except Exception as e:
+        print(f"[{display}] background task error: {e}")
+        await broadcast({
+            "type": "agent_background_done",
+            "agent": agent_key,
+            "display": display,
+            "summary": f"Error: {e}",
+        })
+        await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
+
+
+# ── Agent instance (wired with background runner) ─────────────────────────────
+agent      = TinaAgent(background_runner=background_runner)
 _hud_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 _HUD_SYSTEM = """You are TINA's neural core generating live dashboard intelligence panels.
@@ -66,16 +129,7 @@ Type-specific fields:
 Mix persistent and ephemeral. Be creative and AI-system-appropriate."""
 
 
-async def broadcast(data: dict):
-    dead = []
-    for ws in connections:
-        try:
-            await ws.send_json(data)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        if ws in connections:
-            connections.remove(ws)
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
 
 async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/webm;codecs=opus") -> str:
@@ -118,15 +172,6 @@ async def synthesise(text: str) -> bytes | None:
         return None
 
 
-_AGENT_META = {
-    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9"},
-    "coding":   {"display": "Coding",   "color": "#10b981", "glow": "#6ee7b7"},
-}
-
-
-_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
-
-
 async def _tts_stream(reply: str):
     """Split reply into sentences, TTS each one, broadcast as indexed chunks."""
     if not ELEVENLABS_API_KEY:
@@ -155,16 +200,25 @@ async def _handle_message(text: str):
         if name == "delegate_to_agent":
             key  = (inputs or {}).get("agent", "")
             meta = _AGENT_META.get(key, {"display": key.capitalize(), "color": "#8B5CF6", "glow": "#A78BFA"})
-            await broadcast({"type": "agent_active", "agent": meta["display"], "color": meta["color"], "glow": meta["glow"]})
+            # Background mode: agent runs independently — use agent_background_start not agent_active
+            event_type = "agent_background_start" if agent.has_background_runner else "agent_active"
+            await broadcast({
+                "type":  event_type,
+                "agent": meta["display"],
+                "key":   key,
+                "color": meta["color"],
+                "glow":  meta["glow"],
+            })
         else:
             await broadcast({"type": "tool", "name": name, "time": datetime.now().strftime("%H:%M:%S")})
 
     async def on_agent_done(agent_key: str):
+        # Only called in blocking (non-background) mode
         await broadcast({"type": "agent_done"})
 
-    reply = await agent.chat(text, on_tool=on_tool, on_agent_done=on_agent_done)
+    reply = await agent.chat(text, on_tool=on_tool, on_agent_done=on_agent_done, background=True)
     await broadcast({"type": "response", "text": reply})
-    asyncio.create_task(_write_memory(text, reply))  # background — non-blocking
+    asyncio.create_task(_write_memory(text, reply))
     await _tts_stream(reply)
 
 
@@ -207,7 +261,8 @@ async def chat_endpoint(body: dict):
     label = f"[{source.upper()}] {text}"
     await broadcast({"type": "heard", "text": label})
     async with _agent_lock:
-        reply = await agent.chat(text)
+        # background=False: Slack waits for the full reply including any delegation
+        reply = await agent.chat(text, background=False)
     await broadcast({"type": "response", "text": reply})
     asyncio.create_task(_write_memory(text, reply))
     asyncio.create_task(_tts_stream(reply))
@@ -255,7 +310,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     connections.append(ws)
     await ws.send_json({"type": "state", "state": "listening"})
-    pending_mime = "audio/webm;codecs=opus"  # updated by audio_meta message
+    pending_mime = "audio/webm;codecs=opus"
     try:
         while True:
             msg = await ws.receive()
@@ -285,7 +340,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             # ── Text frame: JSON control messages ─────────────────────────────
             elif msg.get("text"):
-                data = _json.loads(msg["text"])
+                data     = _json.loads(msg["text"])
                 msg_type = data.get("type")
 
                 if msg_type == "audio_meta":

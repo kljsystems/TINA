@@ -177,7 +177,7 @@ function AgentStatus({ agentStatuses, tinaState }) {
   const agents = [
     { key: 'tina',     label: 'TINA CORE' },
     { key: 'research', label: 'RESEARCH'  },
-    { key: 'coding',   label: 'CODING'    },
+    { key: 'coding',   label: 'SAM'       },
   ]
   const tinaStatusMap = { listening: 'READY', thinking: 'PROCESSING', speaking: 'RESPONDING', standby: 'STANDBY', offline: 'OFFLINE' }
 
@@ -185,11 +185,12 @@ function AgentStatus({ agentStatuses, tinaState }) {
     <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
       <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>AGENT STATUS</div>
       {agents.map(({ key, label }) => {
-        const ag      = agentStatuses[key]
-        const isCore  = key === 'tina'
-        const active  = isCore ? tinaState !== 'offline' && tinaState !== 'standby' : ag.status === 'active'
-        const status  = isCore ? (tinaStatusMap[tinaState] ?? tinaState.toUpperCase()) : ag.status.toUpperCase()
-        const tool    = ag.tool
+        const ag         = agentStatuses[key]
+        const isCore     = key === 'tina'
+        const isRunning  = ag.status === 'running'  // background task in progress
+        const active     = isCore ? tinaState !== 'offline' && tinaState !== 'standby' : ag.status === 'active' || isRunning
+        const status     = isCore ? (tinaStatusMap[tinaState] ?? tinaState.toUpperCase()) : ag.status.toUpperCase()
+        const tool       = ag.tool
 
         return (
           <div key={key} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${P}11` }}>
@@ -197,16 +198,17 @@ function AgentStatus({ agentStatuses, tinaState }) {
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{
                   width: 5, height: 5, borderRadius: '50%', display: 'inline-block',
-                  background: ag.color,
+                  background: isRunning ? ag.glow : ag.color,
                   boxShadow: active ? `0 0 8px ${ag.glow}` : 'none',
                   opacity: active ? 1 : 0.3,
-                  animation: active && !tool ? 'agentpulse 2s ease-in-out infinite' : 'none',
+                  // background agents get a faster pulse to distinguish from blocking active
+                  animation: active ? (isRunning ? 'agentpulse 0.9s ease-in-out infinite' : 'agentpulse 2s ease-in-out infinite') : 'none',
                 }} />
                 <span style={{ fontSize: 10, letterSpacing: 1, color: active ? ag.color : PG, opacity: active ? 1 : 0.4 }}>
                   {label}
                 </span>
               </span>
-              <span style={{ fontSize: 9, letterSpacing: 1, opacity: 0.45 }}>{status}</span>
+              <span style={{ fontSize: 9, letterSpacing: 1, opacity: 0.45, color: isRunning ? ag.glow : undefined }}>{status}</span>
             </div>
             {tool && (
               <div style={{
