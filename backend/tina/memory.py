@@ -20,10 +20,10 @@ _SYSTEM = """You are TINA's memory core. After each conversation turn, extract k
 Write 1-3 Obsidian notes. Each note covers exactly ONE topic.
 
 Write notes about:
-- Facts about Kai (preferences, habits, skills, background, opinions)
+- Facts about Ky (preferences, habits, skills, background, opinions)
 - Decisions made and why
 - Project context or technical details worth retaining
-- Patterns in how Kai works or thinks
+- Patterns in how Ky works or thinks
 - Anything that would be useful to recall in a future conversation
 
 Skip if the turn contains nothing meaningful to remember (e.g. simple greetings, one-word replies).
@@ -41,7 +41,7 @@ Return ONLY a JSON array — no markdown, no explanation:
 [
   {
     "filename": "2026-06-10-kai-prefers-python.md",
-    "content": "---\\ndate: 2026-06-10\\ntags: [tina-memory, learned, preferences]\\n---\\n# Kai Prefers Python for Backend\\n\\nContent here.\\n\\n*Written by Tina · 14:32*"
+    "content": "---\\ndate: 2026-06-10\\ntags: [tina-memory, learned, preferences]\\n---\\n# Ky Prefers Python for Backend\\n\\nContent here.\\n\\n*Written by Tina · 14:32*"
   }
 ]
 
@@ -62,7 +62,7 @@ async def extract_and_write_notes(user_msg: str, tina_reply: str) -> None:
 
         prompt = (
             f"Date: {today}\n\n"
-            f"Kai said: {user_msg}\n\n"
+            f"Ky said: {user_msg}\n\n"
             f"Tina replied: {tina_reply}"
         )
 

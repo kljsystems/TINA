@@ -19,7 +19,7 @@ from config import (
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
     SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID,
-    SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH,
+    SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH, SLACK_CHANNEL_AGENTS,
 )
 from tina.agent import TinaAgent
 
@@ -28,6 +28,12 @@ _agent_lock = asyncio.Lock()
 _AGENT_META = {
     "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH, "token": None},
     "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM,      "token": SLACK_SAM_BOT_TOKEN or None},
+}
+
+# Channel → agent key, for routing direct Slack messages to the right agent
+_CHANNEL_TO_AGENT = {
+    SLACK_CHANNEL_SAM:      "coding",
+    SLACK_CHANNEL_RESEARCH: "research",
 }
 
 
@@ -49,7 +55,7 @@ app.add_middleware(
 
 connections: list[WebSocket] = []
 
-# Per-agent queues for Kai's direct replies in agent channels
+# Per-agent queues for Ky's direct replies in agent channels
 _agent_answer_queues: dict[str, asyncio.Queue] = {}
 _channel_name_cache:  dict[str, str]           = {}  # channel ID → "#name"
 
@@ -144,7 +150,7 @@ AUTO for:
 
 
 async def _should_escalate_to_kai(question: str) -> bool:
-    """Return True if this question needs Kai's direct input rather than Tina's auto-answer."""
+    """Return True if this question needs Ky's direct input rather than Tina's auto-answer."""
     try:
         client   = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
@@ -180,7 +186,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         # Sam posts his question as himself
         await _slack_post(channel, question, token=agent_token)
 
-        # Classify: can Tina handle this, or does Kai need to decide?
+        # Classify: can Tina handle this, or does Ky need to decide?
         escalate, tina_answer = await asyncio.gather(
             _should_escalate_to_kai(question),
             _get_tina_answer(question),
@@ -191,8 +197,8 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
             await _slack_post(channel, tina_answer, token=tina_token)
             return tina_answer
 
-        # High-stakes — park the task and wait for Kai
-        kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "Kai"
+        # High-stakes — park the task and wait for Ky
+        kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "Ky"
         await _slack_post(
             channel,
             f"[ACTION REQUIRED] {kai_mention} — I need your call on this. Sam will wait.\n\n"
@@ -203,7 +209,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         q: asyncio.Queue = asyncio.Queue()
         _agent_answer_queues[channel] = q
         try:
-            # Wait up to 4 hours for Kai — task is parked, not timed out
+            # Wait up to 4 hours for Ky — task is parked, not timed out
             kai_answer = await asyncio.wait_for(q.get(), timeout=14400)
             await _slack_post(channel, "Got it, thanks.", token=agent_token)
             return kai_answer
@@ -229,7 +235,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         full_msg = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
         await _slack_post(channel, full_msg, token=agent_token)
 
-        # Tina pings #tina so Kai sees it without having to check #sam
+        # Tina pings #tina so Ky sees it without having to check #sam
         await _slack_post(SLACK_CHANNEL, f"*{display} just finished.* Full result in {channel}.\n\n_{summary}_", token=tina_token)
 
         # Dashboard update
@@ -242,6 +248,24 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         await _slack_post(channel, f"Hit an error: {e}", token=agent_token)
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Error: {e}"})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
+
+
+async def _direct_agent_chat(agent_key: str, text: str, channel: str):
+    """Handle a direct message to an agent in their Slack channel."""
+    from tina.agent import _AGENTS
+    meta        = _AGENT_META.get(agent_key, {})
+    agent_token = meta.get("token")
+    cls         = _AGENTS.get(agent_key)
+    if not cls:
+        return
+    try:
+        specialist = cls()
+        result     = await specialist.run(text)
+        await _slack_post(channel, result[:2000], token=agent_token)
+        if len(result) > 2000:
+            await _slack_post(channel, f"_(response truncated — {len(result):,} chars total)_", token=agent_token)
+    except Exception as e:
+        await _slack_post(channel, f"Error: {e}", token=agent_token)
 
 
 # ── Agent instance (wired with background runner) ─────────────────────────────
@@ -426,11 +450,19 @@ async def _start_slack():
             if not text or message.get("bot_id"):
                 return
 
-            # Resolve channel ID to name and check if an agent is waiting for a reply
+            # Resolve channel ID to name
             channel_id   = message.get("channel", "")
             channel_name = await _resolve_channel_name(channel_id)
+
+            # Agent is waiting for Ky's reply (escalated question)
             if channel_name in _agent_answer_queues:
                 await _agent_answer_queues[channel_name].put(text)
+                return
+
+            # Direct message to an agent's own channel
+            agent_key = _CHANNEL_TO_AGENT.get(channel_name)
+            if agent_key:
+                asyncio.create_task(_direct_agent_chat(agent_key, text, channel_name))
                 return
 
             # Otherwise route to Tina

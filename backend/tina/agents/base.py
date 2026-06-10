@@ -12,18 +12,44 @@ _QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
 class BaseAgent:
     """
     Specialist agent base class. Each subclass defines:
-      - name:         display name broadcast to the dashboard
-      - system:       system prompt
-      - tool_modules: list of tool modules (each with DEFINITIONS + handle)
+      - name:             display name broadcast to the dashboard
+      - system:           system prompt
+      - tool_modules:     list of tool modules (each with DEFINITIONS + handle)
+      - allow_delegation: if True, adds a request_agent tool so this agent can
+                          call other specialist agents as sub-tasks
     """
-    name:         str = "agent"
-    system:       str = ""
-    tool_modules: list = []
+    name:             str  = "agent"
+    system:           str  = ""
+    tool_modules:     list = []
+    allow_delegation: bool = False
 
     def __init__(self):
         self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         self._definitions = [d for m in self.tool_modules for d in m.DEFINITIONS]
         self._handlers    = {d["name"]: m.handle for m in self.tool_modules for d in m.DEFINITIONS}
+
+        if self.allow_delegation:
+            self._definitions.append(self._build_request_agent_tool())
+
+    def _build_request_agent_tool(self) -> dict:
+        from tina.agent import _AGENTS
+        others = [k for k, v in _AGENTS.items() if not isinstance(self, v)]
+        return {
+            "name": "request_agent",
+            "description": (
+                "Ask another specialist agent to complete a sub-task and return the result. "
+                "Use 'research' to look things up, search the web, find documentation, or "
+                "gather any information you need. Write a clear, complete task brief."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "enum": others, "description": "Which agent to call."},
+                    "task":  {"type": "string", "description": "Full task brief for the sub-agent."},
+                },
+                "required": ["agent", "task"],
+            },
+        }
 
     async def run(self, task: str, on_tool=None, question_handler=None) -> str:
         """
@@ -55,11 +81,19 @@ class BaseAgent:
                         continue
                     if on_tool:
                         await on_tool(block.name, block.input)
-                    handler = self._handlers.get(block.name)
-                    result  = (
-                        await asyncio.to_thread(handler, block.name, block.input)
-                        if handler else f"Unknown tool: {block.name}"
-                    )
+
+                    if block.name == "request_agent" and self.allow_delegation:
+                        result = await self._run_sub_agent(
+                            block.input.get("agent", ""),
+                            block.input.get("task", ""),
+                            on_tool=on_tool,
+                        )
+                    else:
+                        handler = self._handlers.get(block.name)
+                        result  = (
+                            await asyncio.to_thread(handler, block.name, block.input)
+                            if handler else f"Unknown tool: {block.name}"
+                        )
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
@@ -85,3 +119,15 @@ class BaseAgent:
                         continue
 
                 return reply
+
+    async def _run_sub_agent(self, agent_key: str, task: str, on_tool=None) -> str:
+        """Run another specialist agent as a synchronous sub-task."""
+        from tina.agent import _AGENTS
+        cls = _AGENTS.get(agent_key)
+        if not cls:
+            return f"Unknown agent: {agent_key}"
+        if isinstance(self, cls):
+            return "Cannot delegate to self."
+        print(f"[{self.name}] delegating to {agent_key}: {task[:60]}...")
+        specialist = cls()
+        return await specialist.run(task, on_tool=on_tool)

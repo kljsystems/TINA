@@ -11,14 +11,14 @@ except Exception:
 DEFINITIONS = [
     {
         "name": "github_list_repos",
-        "description": "List Kai's GitHub repositories. Use to see what repos exist, find a repo by name, or get an overview of active projects.",
+        "description": "List Ky's GitHub repositories. Use to see what repos exist, find a repo by name, or get an overview of active projects.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "filter": {
                     "type": "string",
                     "enum": ["all", "owner", "member"],
-                    "description": "Which repos to show. Defaults to 'owner' (repos Kai owns).",
+                    "description": "Which repos to show. Defaults to 'owner' (repos Ky owns).",
                 },
                 "sort": {
                     "type": "string",

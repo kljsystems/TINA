@@ -13,9 +13,9 @@ DEFINITIONS = [
     {
         "name": "slack_send",
         "description": (
-            "Send a message to Kai via Slack. Use for async updates, summaries, "
+            "Send a message to Ky via Slack. Use for async updates, summaries, "
             "reminders, or anything that doesn't need an immediate voice/dashboard response. "
-            "Prefer Slack when Kai is likely away from the dashboard."
+            "Prefer Slack when Ky is likely away from the dashboard."
         ),
         "input_schema": {
             "type": "object",
