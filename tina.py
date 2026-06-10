@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 """
 T.I.N.A — Totally Intelligent Neural Assistant
 Main entry point — thin router, delegates everything to modules.
@@ -14,8 +18,6 @@ import time
 import queue
 import threading
 
-# Ensure root dir is on path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Load config first (sets up env vars)
 import config
@@ -107,7 +109,9 @@ def startup():
         sys.exit(1)
 
     # Init voice manager
-    vm.init()
+    # Init voice manager
+    vm.voices = vm.load_voices()
+    vm.set_voice(vm.get_default_voice())
 
     print("\n" + "═" * 58)
     print("  T.I.N.A  —  Totally Intelligent Neural Assistant")
@@ -136,9 +140,6 @@ def startup():
     dash.init_from_memory(mem_data, summaries)
     dash.set_voice(vm.get_voice_name())
     dash.start_heartbeat()
-
-    # Load Whisper
-    voice_in.load_whisper()
 
     # Start threads
     voice_in.start_listener(voice_out.is_speaking)

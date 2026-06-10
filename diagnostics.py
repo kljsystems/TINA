@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 """
 TINA Startup Diagnostics
 Tests all components and returns a status report.
@@ -205,6 +209,22 @@ def test_pyttsx3():
     except Exception as e:
         return "fail", f"pyttsx3 error: {e}"
 
+def test_deepgram():
+    if not DEEPGRAM_API_KEY:
+        return "warn", "DEEPGRAM_API_KEY missing — add to .env"
+    try:
+        import httpx
+        r = httpx.get(
+            "https://api.deepgram.com/v1/projects",
+            headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
+            timeout=5
+        )
+        if r.status_code == 200:
+            return "ok", "deepgram — connected (nova-2, en-AU)"
+        return "fail", f"deepgram error {r.status_code}"
+    except Exception as e:
+        return "fail", f"deepgram error: {e}"
+
 def run_diagnostics() -> dict:
     print("\n" + "═"*55)
     print("  T.I.N.A — Startup Diagnostics")
@@ -223,6 +243,7 @@ def run_diagnostics() -> dict:
 
     print("\n  [ Speech Recognition ]")
     check("Faster-Whisper",      test_whisper)
+    check("Deepgram STT",        test_deepgram)
 
     print("\n  [ Tools & APIs ]")
     check("Tavily search",       test_tavily)
