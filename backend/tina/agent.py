@@ -1,11 +1,12 @@
 import sys
 import os
 import asyncio
+import uuid
 from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL
+from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL
 from tools import weather, vault, calendar_tool, github_tool, slack_tool
 from tina.agents.research import ResearchAgent
 from tina.agents.coding   import CodingAgent
@@ -59,12 +60,32 @@ class TinaAgent:
         self.client            = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         self.history:list[dict] = []
         self.background_runner = background_runner  # injected by main.py
+        self.session_id        = str(uuid.uuid4())
+        self._history_loaded   = False
 
     @property
     def has_background_runner(self) -> bool:
         return self.background_runner is not None
 
+    async def _ensure_history_loaded(self):
+        if self._history_loaded or not SUPABASE_URL:
+            self._history_loaded = True
+            return
+        self._history_loaded = True
+        from tina.memory_db import load_history
+        self.history = await load_history("tina", limit=40)
+        if self.history:
+            print(f"[TinaAgent] loaded {len(self.history)} turns from memory")
+
+    async def _save_turns(self, user_msg: str, assistant_reply: str):
+        if not SUPABASE_URL:
+            return
+        from tina.memory_db import save_turn
+        await save_turn("tina", self.session_id, "user",      user_msg)
+        await save_turn("tina", self.session_id, "assistant", assistant_reply)
+
     async def chat(self, message: str, on_tool=None, on_agent_done=None, background: bool = True) -> str:
+        await self._ensure_history_loaded()
         self.history.append({"role": "user", "content": message})
 
         while True:
@@ -103,6 +124,7 @@ class TinaAgent:
             else:
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
                 self.history.append({"role": "assistant", "content": response.content})
+                asyncio.create_task(self._save_turns(message, reply))
                 return reply
 
     async def _dispatch(self, name: str, inputs: dict, on_tool=None, on_agent_done=None, background: bool = True) -> str:
@@ -135,4 +157,6 @@ class TinaAgent:
         return f"Unknown tool: {name}"
 
     def reset(self):
-        self.history = []
+        self.history        = []
+        self.session_id     = str(uuid.uuid4())
+        self._history_loaded = False  # reload from DB on next chat()

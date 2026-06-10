@@ -1,10 +1,11 @@
 import sys
 import os
 import re
+import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL
+from config import ANTHROPIC_API_KEY, MODEL, SUPABASE_URL
 
 _QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
 
@@ -51,6 +52,13 @@ class BaseAgent:
             },
         }
 
+    async def _save_task(self, session_id: str, task: str, result: str):
+        if not SUPABASE_URL:
+            return
+        from tina.memory_db import save_turn
+        await save_turn(self.name.lower(), session_id, "user",      task)
+        await save_turn(self.name.lower(), session_id, "assistant", result)
+
     async def run(self, task: str, on_tool=None, question_handler=None) -> str:
         """
         Run the agent on a task and return the result as a string.
@@ -58,7 +66,17 @@ class BaseAgent:
         the handler is called and the answer is fed back before continuing.
         """
         import asyncio
-        history   = [{"role": "user", "content": task}]
+        session_id = str(uuid.uuid4())
+
+        # Inject recent work context so the agent remembers past tasks
+        enriched_task = task
+        if SUPABASE_URL:
+            from tina.memory_db import load_recent_tasks
+            recent = await load_recent_tasks(self.name.lower(), limit=8)
+            if recent:
+                enriched_task = f"{recent}\n\n---\n\nCURRENT TASK:\n\n{task}"
+
+        history   = [{"role": "user", "content": enriched_task}]
         qa_rounds = 0
 
         while True:
@@ -118,6 +136,7 @@ class BaseAgent:
                         })
                         continue
 
+                asyncio.create_task(self._save_task(session_id, task, reply))
                 return reply
 
     async def _run_sub_agent(self, agent_key: str, task: str, on_tool=None) -> str:
