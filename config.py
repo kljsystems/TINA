@@ -53,8 +53,17 @@ ELEVENLABS_MODEL   = "eleven_turbo_v2_5"
 ELEVENLABS_FORMAT  = "mp3_44100_128"
 DEFAULT_VOICE_ID   = "XrExE9yKIg1WjnnlVkGX"  # Matilda (Australian female, warm)
 
-# ── Obsidian Vault ───────────────────────────────────────────────────────────
-VAULT_DIR = r"C:\Users\nrlocal\Desktop\KLJ\Memory"
+# ── Base directory (change this in .env when moving to dedicated PC) ─────────
+KLJ_BASE  = os.getenv("KLJ_BASE", r"C:\Users\nrlocal\Desktop\KLJ")
+
+# ── Obsidian Vault ────────────────────────────────────────────────────────────
+VAULT_DIR = os.path.join(KLJ_BASE, "Memory")
+
+# ── Project registry (name → local path) ─────────────────────────────────────
+PROJECTS = {
+    "tina": os.path.join(KLJ_BASE, "TINA"),
+    "kaos": os.path.join(KLJ_BASE, "KAOS"),
+}
 
 # ── File paths ────────────────────────────────────────────────────────────────
 DATA_DIR        = os.path.join(BASE_DIR, "data")
