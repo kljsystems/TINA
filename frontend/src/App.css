@@ -1,0 +1,86 @@
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{width:100%;height:100%;background:#000;overflow:hidden;font-family:'Courier New',monospace}
+
+.hud{width:100vw;height:100vh;position:relative;display:grid;grid-template-rows:48px 1fr 100px 40px 32px}
+
+/* Scan line */
+.scan{position:absolute;left:0;width:100%;height:2px;background:rgba(55,138,221,0.1);animation:scan 6s linear infinite;z-index:1;pointer-events:none}
+@keyframes scan{0%{top:-2px}100%{top:100%}}
+
+/* Corner brackets */
+.corner{position:absolute;width:32px;height:32px;border-color:rgba(55,138,221,0.6);border-style:solid;z-index:5;transition:border-color 1s}
+.tl{top:8px;left:8px;border-width:2px 0 0 2px}.tr{top:8px;right:8px;border-width:2px 2px 0 0}
+.bl{bottom:36px;left:8px;border-width:0 0 2px 2px}.br{bottom:36px;right:8px;border-width:0 2px 2px 0}
+
+/* Topbar */
+.topbar{position:relative;z-index:3;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:0.5px solid rgba(55,138,221,0.2)}
+.topbar-title{font-size:11px;letter-spacing:0.4em;color:rgba(55,138,221,0.7);text-transform:uppercase}
+.topbar-badges{display:flex;gap:12px}
+.badge{font-size:9px;letter-spacing:0.2em;padding:4px 12px;border:0.5px solid;text-transform:uppercase;transition:all 0.5s}
+.badge-blue{border-color:rgba(55,138,221,0.4);color:rgba(55,138,221,0.8)}
+.badge-green{border-color:rgba(29,158,117,0.5);color:rgba(29,158,117,0.9)}
+.badge-amber{border-color:rgba(239,159,39,0.4);color:rgba(239,159,39,0.7)}
+.badge-red{border-color:rgba(226,75,74,0.5);color:rgba(226,75,74,0.8)}
+.topbar-time{font-size:11px;color:rgba(55,138,221,0.5);letter-spacing:0.1em}
+
+/* Body */
+.body{position:relative;z-index:3;display:grid;grid-template-columns:280px 1fr 280px}
+.left-panels,.right-panels{display:flex;flex-direction:column;padding:16px;gap:8px}
+.panel{background:rgba(10,20,50,0.7);border:0.5px solid rgba(55,138,221,0.25);padding:14px 18px;transition:border-color 0.5s,background 0.5s}
+.panel:hover{border-color:rgba(55,138,221,0.6)}
+.plabel{font-size:9px;color:rgba(55,138,221,0.7);letter-spacing:0.3em;text-transform:uppercase;margin-bottom:8px}
+.pval{font-size:18px;color:#85B7EB;letter-spacing:0.05em;font-weight:500;transition:color 0.5s}
+.psub{font-size:10px;color:rgba(29,158,117,0.8);margin-top:5px;letter-spacing:0.1em}
+
+/* Centre */
+.center-col{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px}
+.ring-wrap{position:relative;width:320px;height:320px;display:flex;align-items:center;justify-content:center}
+.ring-inner{position:relative;z-index:2;text-align:center}
+.ring-label{font-size:10px;letter-spacing:0.4em;color:rgba(55,138,221,0.7);text-transform:uppercase;margin-bottom:10px}
+.ring-name{font-size:48px;font-weight:500;color:#85B7EB;letter-spacing:0.25em;line-height:1;transition:color 0.5s}
+.ring-state{font-size:11px;color:#1D9E75;letter-spacing:0.2em;margin-top:12px;display:flex;align-items:center;justify-content:center;gap:8px;transition:color 0.5s}
+.dot{width:8px;height:8px;border-radius:50%;background:#1D9E75;display:inline-block;flex-shrink:0;transition:background 0.3s}
+@keyframes speakPulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.pulse-speak{animation:speakPulse 0.4s ease-in-out infinite}
+.pulse-think{animation:speakPulse 0.8s ease-in-out infinite}
+
+.stat-row{display:flex;gap:12px}
+.stat{background:rgba(10,20,50,0.7);border:0.5px solid rgba(55,138,221,0.2);padding:12px 20px;text-align:center;flex:1}
+.stat-val{font-size:22px;color:#85B7EB;font-weight:500}
+.stat-label{font-size:9px;color:rgba(55,138,221,0.6);letter-spacing:0.2em;text-transform:uppercase;margin-top:4px}
+
+/* Conversation */
+.convo-section{position:relative;z-index:3;border-top:0.5px solid rgba(55,138,221,0.2);padding:8px 24px;display:flex;flex-direction:column;gap:4px;overflow:hidden}
+.convo-row{display:flex;gap:16px;align-items:flex-start;animation:fadein 0.4s ease forwards}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.who{font-size:10px;letter-spacing:0.25em;min-width:50px;text-transform:uppercase;padding-top:2px;font-weight:500}
+.who.kai{color:#378ADD}.who.tina{color:#1D9E75}
+.msg{font-size:13px;color:rgba(133,183,235,0.85);line-height:1.5}
+
+/* Input bar */
+.input-bar{position:relative;z-index:3;display:flex;align-items:center;gap:8px;padding:0 20px;border-top:0.5px solid rgba(55,138,221,0.15);background:rgba(0,0,0,0.6)}
+.input-prompt{font-size:12px;color:rgba(55,138,221,0.6);letter-spacing:0.1em;flex-shrink:0}
+.input-field{flex:1;background:transparent;border:none;outline:none;font-family:'Courier New',monospace;font-size:12px;color:#85B7EB;letter-spacing:0.05em}
+.input-field::placeholder{color:rgba(55,138,221,0.25)}
+.input-field:disabled{opacity:0.3}
+.input-send{background:transparent;border:0.5px solid rgba(55,138,221,0.3);color:rgba(55,138,221,0.7);font-family:'Courier New',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;padding:4px 14px;cursor:pointer;transition:all 0.2s}
+.input-send:hover:not(:disabled){border-color:rgba(55,138,221,0.8);color:rgba(55,138,221,1)}
+.input-send:disabled{opacity:0.2;cursor:default}
+
+/* Ticker */
+.ticker{position:relative;z-index:3;border-top:0.5px solid rgba(55,138,221,0.15);background:rgba(0,0,0,0.8);display:flex;align-items:center;overflow:hidden}
+.ticker-label{font-size:8px;color:rgba(55,138,221,0.4);letter-spacing:0.3em;padding:0 12px;text-transform:uppercase;white-space:nowrap;border-right:0.5px solid rgba(55,138,221,0.2);height:100%;display:flex;align-items:center}
+.ticker-inner{display:inline-block;white-space:nowrap;font-size:9px;color:rgba(55,138,221,0.4);letter-spacing:0.15em;animation:tick 35s linear infinite;padding-left:20px}
+@keyframes tick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+/* Alert */
+.alert-bar{position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:10;font-size:10px;letter-spacing:0.25em;text-transform:uppercase;padding:6px 20px;pointer-events:none}
+.alert-bar.tool{color:#1D9E75;background:rgba(0,20,10,0.9);border:0.5px solid rgba(29,158,117,0.4)}
+.alert-bar.offline{color:#E24B4A;background:rgba(30,0,0,0.95);border:0.5px solid rgba(226,75,74,0.5)}
+
+/* Offline overlay */
+.offline-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;background:rgba(0,0,0,0.75)}
+.offline-title{font-size:32px;letter-spacing:0.4em;color:rgba(226,75,74,0.8);text-transform:uppercase}
+.offline-sub{font-size:10px;letter-spacing:0.3em;color:rgba(226,75,74,0.4);text-transform:uppercase}
+@keyframes offblink{0%,100%{opacity:0.8}50%{opacity:0.3}}
+.offline-blink{animation:offblink 2s ease-in-out infinite}
