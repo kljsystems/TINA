@@ -22,6 +22,7 @@ GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN", "")
 SLACK_BOT_TOKEN        = os.getenv("SLACK_BOT_TOKEN",        "")
 SLACK_APP_TOKEN        = os.getenv("SLACK_APP_TOKEN",        "")
 SLACK_SAM_BOT_TOKEN    = os.getenv("SLACK_SAM_BOT_TOKEN",    "")
+SLACK_KAI_USER_ID      = os.getenv("SLACK_KAI_USER_ID",      "")  # e.g. U0123456789
 SLACK_CHANNEL          = os.getenv("SLACK_CHANNEL",          "#tina")
 SLACK_CHANNEL_SAM      = os.getenv("SLACK_CHANNEL_SAM",      "#sam")
 SLACK_CHANNEL_RESEARCH = os.getenv("SLACK_CHANNEL_RESEARCH", "#research")

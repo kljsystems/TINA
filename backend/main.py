@@ -18,7 +18,7 @@ from config import (
     ANTHROPIC_API_KEY, MODEL, ORCHESTRATOR_MODEL, SYSTEM_PROMPT,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
-    SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN,
+    SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID,
     SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH,
 )
 from tina.agent import TinaAgent
@@ -122,6 +122,44 @@ async def _get_tina_answer(question: str) -> str:
         return "I couldn't get a clear answer right now — use your best judgement and proceed."
 
 
+_ESCALATE_SYSTEM = """You decide whether an agent's question requires the user's direct input or can be answered automatically.
+
+Respond with exactly one word: ESCALATE or AUTO.
+
+ESCALATE for:
+- Deleting or overwriting files, data, or records
+- Sending messages, emails, or notifications to external people
+- Financial transactions or purchases
+- Pushing to production, merging PRs, deploying
+- Any action that cannot be easily undone
+- Anything that affects people outside this system
+
+AUTO for:
+- Code architecture and design decisions
+- UI/UX style and preference choices
+- Technical stack or library choices
+- File naming, structure, organisation
+- Anything easily reversible
+- Anything Tina can determine from user history and preferences"""
+
+
+async def _should_escalate_to_kai(question: str) -> bool:
+    """Return True if this question needs Kai's direct input rather than Tina's auto-answer."""
+    try:
+        client   = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        response = await client.messages.create(
+            model=ORCHESTRATOR_MODEL,
+            max_tokens=10,
+            system=_ESCALATE_SYSTEM,
+            messages=[{"role": "user", "content": question}],
+        )
+        text = next((b.text for b in response.content if hasattr(b, "text")), "AUTO")
+        return "ESCALATE" in text.upper()
+    except Exception as e:
+        print(f"[escalate] classification error: {e}")
+        return False  # default to auto on error
+
+
 async def background_runner(agent_key: str, cls, task: str, on_tool):
     """Called by TinaAgent._dispatch — launches specialist as a fire-and-forget task."""
     asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool))
@@ -139,26 +177,42 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     await _slack_post(channel, f"*Task from Tina:*\n\n{task}", token=tina_token)
 
     async def question_handler(question: str) -> str:
-        # Sam posts the question as himself
+        # Sam posts his question as himself
         await _slack_post(channel, question, token=agent_token)
 
-        # Tina generates a suggested answer from context
-        tina_answer = await _get_tina_answer(question)
+        # Classify: can Tina handle this, or does Kai need to decide?
+        escalate, tina_answer = await asyncio.gather(
+            _should_escalate_to_kai(question),
+            _get_tina_answer(question),
+        )
+
+        if not escalate:
+            # Low-stakes — Tina answers immediately, Sam never waits
+            await _slack_post(channel, tina_answer, token=tina_token)
+            return tina_answer
+
+        # High-stakes — park the task and wait for Kai
+        kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "Kai"
         await _slack_post(
             channel,
-            f"{tina_answer}\n\n_Kai — reply here within 90 seconds to override._",
+            f"[ACTION REQUIRED] {kai_mention} — I need your call on this. Sam will wait.\n\n"
+            f"_Tina's suggestion if you're unavailable: {tina_answer}_",
             token=tina_token,
         )
 
-        # Open a queue for Kai to drop a reply into
         q: asyncio.Queue = asyncio.Queue()
         _agent_answer_queues[channel] = q
         try:
-            kai_answer = await asyncio.wait_for(q.get(), timeout=90)
+            # Wait up to 4 hours for Kai — task is parked, not timed out
+            kai_answer = await asyncio.wait_for(q.get(), timeout=14400)
             await _slack_post(channel, "Got it, thanks.", token=agent_token)
             return kai_answer
         except asyncio.TimeoutError:
-            # Kai didn't reply — Sam proceeds with Tina's answer
+            await _slack_post(
+                channel,
+                "No response after 4 hours — proceeding with Tina's suggestion.",
+                token=agent_token,
+            )
             return tina_answer
         finally:
             _agent_answer_queues.pop(channel, None)
