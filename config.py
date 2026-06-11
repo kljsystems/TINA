@@ -33,7 +33,8 @@ SLACK_CHANNEL_RESEARCH = os.getenv("SLACK_CHANNEL_RESEARCH", "#research")
 SLACK_CHANNEL_AGENTS   = os.getenv("SLACK_CHANNEL_AGENTS",   "#agents")
 
 # ── AI Model ──────────────────────────────────────────────────────────────────
-MODEL              = "claude-sonnet-4-6"        # specialist agents
+MODEL              = "claude-sonnet-4-6"        # specialist agents (simple tasks)
+OPUS_MODEL         = "claude-opus-4-8"            # specialist agents (complex tasks)
 ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — full intelligence
 
 # ── Wake & Exit ───────────────────────────────────────────────────────────────

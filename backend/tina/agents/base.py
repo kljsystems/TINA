@@ -5,20 +5,72 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
+from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
+
+
+_COMPLEX_KEYWORDS = {
+    "architect", "refactor", "redesign", "integrate", "migration", "migrate",
+    "rebuild", "rewrite", "multiple files", "across", "system", "overhaul",
+    "phase", "pipeline", "infrastructure", "database", "schema", "deploy",
+}
+
+
+def _is_complex_task(task: str) -> bool:
+    """Heuristic: use Opus when the task is architecturally significant."""
+    task_lower = task.lower()
+    keyword_hit = any(kw in task_lower for kw in _COMPLEX_KEYWORDS)
+    long_brief  = len(task) > 500
+    return keyword_hit or long_brief
+
+
+def _semantic_vault_notes(task: str, search_dirs: list[str], max_notes: int = 6, chars_each: int = 700) -> str:
+    """
+    Find vault notes most relevant to this task using keyword overlap scoring.
+    Searches across Notes/, Decisions/, and Learned/ for the project.
+    """
+    task_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', task.lower()))
+    if not task_words:
+        return ""
+
+    scored: list[tuple[int, str, str]] = []
+    for directory in search_dirs:
+        if not os.path.isdir(directory):
+            continue
+        for fname in os.listdir(directory):
+            if not fname.endswith(".md"):
+                continue
+            fpath = os.path.join(directory, fname)
+            try:
+                content = open(fpath, encoding="utf-8", errors="replace").read()
+                note_words = set(re.findall(r'\b[a-zA-Z]{4,}\b', content.lower()))
+                score = len(task_words & note_words)
+                if score >= 3:
+                    scored.append((score, fname, content))
+            except Exception:
+                continue
+
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    snippets = [
+        f"### {fname} (relevance: {score})\n{content[:chars_each]}"
+        for score, fname, content in scored[:max_notes]
+    ]
+    return "\n\n".join(snippets)
 
 
 async def _load_project_context(task: str) -> str:
     """
     Auto-inject project context for any project mentioned in the task.
-    Pulls three sources in order: CLAUDE.md, codebase index, recent vault notes.
+    Sources: CLAUDE.md, codebase index, semantically relevant vault notes.
     """
     task_lower = task.lower()
     for name in PROJECTS:
         if name.lower() not in task_lower:
             continue
 
-        parts        = []
+        parts         = []
         project_vault = os.path.join(VAULT_DIR, "01-Projects", name)
 
         # 1. Project CLAUDE.md — architecture, decisions, current state
@@ -26,8 +78,8 @@ async def _load_project_context(task: str) -> str:
         if os.path.exists(claude_md):
             try:
                 content = open(claude_md, encoding="utf-8").read()
-                if len(content) > 4000:
-                    content = content[:4000] + "\n...(truncated — full doc in vault)"
+                if len(content) > 5000:
+                    content = content[:5000] + "\n...(truncated)"
                 parts.append(f"[{name.upper()} PROJECT CONTEXT — CLAUDE.md]\n{content}")
             except Exception:
                 pass
@@ -37,29 +89,22 @@ async def _load_project_context(task: str) -> str:
         if os.path.exists(index_path):
             try:
                 content = open(index_path, encoding="utf-8").read()
-                if len(content) > 6000:
-                    content = content[:6000] + "\n...(truncated — full index in vault)"
+                if len(content) > 7000:
+                    content = content[:7000] + "\n...(truncated)"
                 parts.append(f"[{name.upper()} CODEBASE INDEX]\n{content}")
             except Exception:
                 pass
 
-        # 3. Recent project notes — decisions, discoveries, technical context
-        notes_dir = os.path.join(project_vault, "Notes")
-        if os.path.isdir(notes_dir):
-            try:
-                note_files = sorted(
-                    [f for f in os.listdir(notes_dir) if f.endswith(".md")],
-                    key=lambda f: os.path.getmtime(os.path.join(notes_dir, f)),
-                    reverse=True,
-                )[:5]
-                if note_files:
-                    snippets = []
-                    for fname in note_files:
-                        content = open(os.path.join(notes_dir, fname), encoding="utf-8").read()
-                        snippets.append(f"### {fname}\n{content[:600]}")
-                    parts.append(f"[{name.upper()} RECENT VAULT NOTES]\n" + "\n\n".join(snippets))
-            except Exception:
-                pass
+        # 3. Semantically relevant vault notes — matched to THIS task's keywords
+        search_dirs = [
+            os.path.join(project_vault,        "Notes"),
+            os.path.join(project_vault,        "Decisions"),
+            os.path.join(VAULT_DIR, "02-Tina-Memory", "Decisions"),
+            os.path.join(VAULT_DIR, "02-Tina-Memory", "Learned"),
+        ]
+        relevant = _semantic_vault_notes(task, search_dirs)
+        if relevant:
+            parts.append(f"[{name.upper()} RELEVANT VAULT NOTES]\n{relevant}")
 
         if parts:
             return "\n\n---\n\n".join(parts)
@@ -163,13 +208,14 @@ class BaseAgent:
         if project_ctx:
             enriched_task = f"{project_ctx}\n\n---\n\n{enriched_task}"
 
+        model     = OPUS_MODEL if _is_complex_task(task) else MODEL
         history   = [{"role": "user", "content": enriched_task}]
         qa_rounds = 0
 
         while True:
             kwargs = dict(
-                model=MODEL,
-                max_tokens=4096,
+                model=model,
+                max_tokens=8192,
                 system=self.system,
                 messages=history,
             )

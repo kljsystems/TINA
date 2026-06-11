@@ -441,6 +441,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
             await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Issue: {verify_msg}"})
             await broadcast({"type": "response", "text": issue_summary})
             asyncio.create_task(_tts_stream(issue_summary))
+            asyncio.create_task(_write_error_memory(agent_key, task, verify_msg))
 
     except Exception as e:
         print(f"[{display}] background task error: {e}")
@@ -633,6 +634,38 @@ async def _handle_message(text: str):
 async def _write_memory(user_msg: str, tina_reply: str, history: list[dict]) -> None:
     from tina.memory import extract_and_write_notes
     await extract_and_write_notes(user_msg, tina_reply, history=history)
+
+
+async def _write_error_memory(agent_key: str, task: str, issue: str) -> None:
+    """Write a failure note to the vault so Sam doesn't repeat the same mistake."""
+    from pathlib import Path
+    from config import VAULT_DIR, PROJECTS
+    import re as _re
+    now      = datetime.now()
+    today    = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M")
+
+    # Find which project this task is about
+    project = next((name for name in PROJECTS if name.lower() in task.lower()), "tina")
+    slug    = _re.sub(r'[^a-z0-9]+', '-', issue[:40].lower()).strip('-')
+    fname   = f"{today}-error-{slug}.md"
+    folder  = Path(VAULT_DIR) / "01-Projects" / project / "Notes"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / fname
+    if path.exists():
+        return
+    content = (
+        f"---\ndate: {today}\ntags: [tina-memory, error, {project}, {agent_key}]\n---\n\n"
+        f"# Failed task: {issue[:60]}\n\n"
+        f"**Agent:** {agent_key}\n"
+        f"**Task:** {task[:300]}\n\n"
+        f"**What went wrong:** {issue}\n\n"
+        f"**Why this matters:** Sam should check for this pattern before attempting similar tasks "
+        f"and avoid the approach that caused this failure.\n\n"
+        f"[[01-Projects/{project}/CLAUDE]] · [[01-Projects/tina/CLAUDE|Sam]]\n\n"
+        f"*Written by Tina · {time_str}*"
+    )
+    path.write_text(content, encoding="utf-8")
 
 
 @app.get("/api/status")
