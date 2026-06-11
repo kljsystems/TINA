@@ -33,7 +33,7 @@ SLACK_CHANNEL_AGENTS   = os.getenv("SLACK_CHANNEL_AGENTS",   "#agents")
 
 # ── AI Model ──────────────────────────────────────────────────────────────────
 MODEL              = "claude-sonnet-4-6"        # specialist agents
-ORCHESTRATOR_MODEL = "claude-haiku-4-5-20251001" # tina orchestrator — faster routing
+ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — full intelligence
 
 # ── Wake & Exit ───────────────────────────────────────────────────────────────
 WAKE_WORDS        = ["hey tina", "tina"]
