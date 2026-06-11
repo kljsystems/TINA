@@ -67,6 +67,7 @@ async def _load_project_context(task: str) -> str:
     return ""
 
 _QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
+_PLAN_RE     = re.compile(r'\[PLAN:\s*(.+?)\]',     re.DOTALL | re.IGNORECASE)
 
 
 def _build_tool_content(result) -> str | list:
@@ -140,7 +141,7 @@ class BaseAgent:
         await save_turn(self.name.lower(), session_id, "user",      task)
         await save_turn(self.name.lower(), session_id, "assistant", result)
 
-    async def run(self, task: str, on_tool=None, question_handler=None) -> str:
+    async def run(self, task: str, on_tool=None, question_handler=None, plan_handler=None) -> str:
         """
         Run the agent on a task and return the result as a string.
         If question_handler is provided and the agent writes [QUESTION: ...],
@@ -207,6 +208,22 @@ class BaseAgent:
 
             else:
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
+
+                # Check for a plan awaiting Ky approval before execution
+                if plan_handler:
+                    match = _PLAN_RE.search(reply)
+                    if match:
+                        plan     = match.group(1).strip()
+                        feedback = await plan_handler(plan)
+                        history.append({"role": "assistant", "content": response.content})
+                        if feedback.strip().lower() in ("approved", "yes", "go", "proceed", "ok"):
+                            history.append({"role": "user", "content": "Plan approved. Execute it now."})
+                        else:
+                            history.append({
+                                "role":    "user",
+                                "content": f"Plan feedback: {feedback}\n\nRevise your approach and proceed.",
+                            })
+                        continue
 
                 # Check if agent is asking a clarifying question
                 if question_handler and qa_rounds < 5:

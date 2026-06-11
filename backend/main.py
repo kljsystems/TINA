@@ -369,6 +369,30 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         finally:
             _agent_answer_queues.pop(channel, None)
 
+    async def plan_handler(plan: str) -> str:
+        """Sam posts a plan — always routes to Ky for approval, never auto-answered."""
+        plan_msg = (
+            f"*Plan from {display}:*\n\n{plan}\n\n"
+            f"_{kai_mention} — reply `approved` to proceed, or give feedback to redirect._"
+        )
+        await _slack_post(channel, plan_msg, token=agent_token)
+        await _slack_post(
+            channel,
+            f"{tina_mention} {kai_mention} — {display} has a plan ready. Waiting for your go-ahead.",
+            token=tina_token,
+        )
+        q: asyncio.Queue = asyncio.Queue()
+        _agent_answer_queues[channel] = q
+        try:
+            feedback = await asyncio.wait_for(q.get(), timeout=86400)  # 24h
+            await _slack_post(channel, f"Got it — proceeding.", token=agent_token)
+            return feedback
+        except asyncio.TimeoutError:
+            await _slack_post(channel, "No response after 24 hours — proceeding with original plan.", token=agent_token)
+            return "approved"
+        finally:
+            _agent_answer_queues.pop(channel, None)
+
     try:
         # Step 1 — Tina @mentions the agent with the task brief
         await _slack_post(channel, f"{sam_mention}\n\n{task}", token=tina_token)
@@ -380,7 +404,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         start_task(agent_key, task)
         print(f"[{display}] background task started: {task[:80]}...")
         specialist = cls()
-        result     = await specialist.run(task, on_tool=tracking_on_tool, question_handler=question_handler)
+        result     = await specialist.run(task, on_tool=tracking_on_tool, question_handler=question_handler, plan_handler=plan_handler)
 
         print(f"[{display}] background task complete ({len(result)} chars)")
 
