@@ -333,26 +333,58 @@ async def synthesise(text: str) -> bytes | None:
         )
         if r.status_code == 200:
             return r.content
+        print(f"[ElevenLabs] error {r.status_code}: {r.text[:200]}")
         return None
 
 
+async def _pyttsx3_speak(text: str):
+    """Play TTS through local PC speakers via pyttsx3."""
+    def _speak():
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            voices = engine.getProperty("voices")
+            # Prefer a female voice for Tina
+            female = next(
+                (v for v in voices if any(n in v.name.lower() for n in ("zira", "aria", "female", "hazel"))),
+                voices[0] if voices else None,
+            )
+            if female:
+                engine.setProperty("voice", female.id)
+            engine.setProperty("rate", 185)
+            engine.setProperty("volume", 0.95)
+            engine.say(text)
+            engine.runAndWait()
+            engine.stop()
+        except Exception as e:
+            print(f"[pyttsx3] error: {e}")
+    await asyncio.to_thread(_speak)
+
+
 async def _tts_stream(reply: str):
-    """Split reply into sentences, TTS each one, broadcast as indexed chunks."""
-    if not ELEVENLABS_API_KEY:
-        await broadcast({"type": "audio_end"})
-        return
+    """Split reply into sentences, TTS each one. ElevenLabs → browser; pyttsx3 fallback → speakers."""
     sentences = [s.strip() for s in _SENTENCE_RE.split(reply) if s.strip()]
     if not sentences:
         sentences = [reply.strip()]
     await broadcast({"type": "state", "state": "speaking"})
-    for i, sentence in enumerate(sentences):
-        audio = await synthesise(sentence)
-        if audio:
-            await broadcast({
-                "type":  "audio_chunk",
-                "index": i,
-                "data":  base64.b64encode(audio).decode(),
-            })
+
+    if ELEVENLABS_API_KEY:
+        any_audio = False
+        for i, sentence in enumerate(sentences):
+            audio = await synthesise(sentence)
+            if audio:
+                any_audio = True
+                await broadcast({
+                    "type":  "audio_chunk",
+                    "index": i,
+                    "data":  base64.b64encode(audio).decode(),
+                })
+        if not any_audio:
+            print("[TTS] ElevenLabs returned nothing — falling back to pyttsx3")
+            await _pyttsx3_speak(reply)
+    else:
+        await _pyttsx3_speak(reply)
+
     await broadcast({"type": "audio_end"})
 
 

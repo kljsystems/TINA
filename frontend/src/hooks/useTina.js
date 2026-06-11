@@ -239,12 +239,19 @@ export function useTina() {
     }
   }, [connect])
 
+  const unlockAudio = useCallback(() => {
+    const ctx = getAudioCtx()
+    if (ctx.state === 'suspended') ctx.resume()
+  }, [getAudioCtx])
+
   const sendMessage = useCallback(text => {
+    unlockAudio()
     if (wsRef.current?.readyState === WebSocket.OPEN)
       wsRef.current.send(JSON.stringify({ type: 'message', text }))
-  }, [])
+  }, [unlockAudio])
 
   const startRecording = useCallback(async () => {
+    unlockAudio()
     if (mediaRef.current || !wsRef.current) return
     try {
       const stream   = await navigator.mediaDevices.getUserMedia({ audio: true })
