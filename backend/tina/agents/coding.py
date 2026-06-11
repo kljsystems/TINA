@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 from .base import BaseAgent
 from tools import github_tool, vault, filesystem_tool
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
-from tools import search
+from tools import search, docs_tool
 
 
 class CodingAgent(BaseAgent):
@@ -78,4 +78,4 @@ TOOLS YOU HAVE
 - search: docs, packages, API references — use instead of guessing"""
 
     allow_delegation = True
-    tool_modules     = [github_tool, vault, filesystem_tool, search]
+    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool]

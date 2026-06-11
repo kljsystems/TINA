@@ -33,7 +33,8 @@ export function useTina() {
     coding:   { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7', label: 'Sam' },
   })
 
-  const activeAgentKeyRef = useRef(null)
+  const activeAgentKeyRef     = useRef(null)
+  const backgroundAgentKeyRef = useRef(null)
 
   const TOOL_LABELS = {
     vault_search: 'VAULT SEARCH', vault_read: 'VAULT READ',
@@ -118,12 +119,12 @@ export function useTina() {
           setTinaState(data.state)
           if (data.state === 'listening') {
             setActiveAgent(null)
-            activeAgentKeyRef.current = null
+            activeAgentKeyRef.current = backgroundAgentKeyRef.current
             setAgentStatuses(prev => ({
               ...prev,
               tina: { ...prev.tina, status: 'listening', tool: null },
-              research: { ...prev.research, status: 'idle', tool: null },
-              coding:   { ...prev.coding,   status: 'idle', tool: null },
+              research: prev.research.status === 'running' ? prev.research : { ...prev.research, status: 'idle', tool: null },
+              coding:   prev.coding.status   === 'running' ? prev.coding   : { ...prev.coding,   status: 'idle', tool: null },
             }))
           } else {
             setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, status: data.state, tool: prev.tina.tool } }))
@@ -143,7 +144,8 @@ export function useTina() {
         case 'agent_background_start': {
           // Agent launched in background — Tina stays free, agent runs independently
           const key = data.key || data.agent?.toLowerCase()
-          activeAgentKeyRef.current = key
+          activeAgentKeyRef.current     = key
+          backgroundAgentKeyRef.current = key
           setAgentStatuses(prev => ({
             ...prev,
             [key]: prev[key] ? { ...prev[key], status: 'running', tool: 'RUNNING...' } : prev[key],
@@ -153,7 +155,8 @@ export function useTina() {
         case 'agent_background_done': {
           // Background agent finished — show result, clear running state
           const key = data.agent?.toLowerCase()
-          activeAgentKeyRef.current = null
+          activeAgentKeyRef.current     = null
+          backgroundAgentKeyRef.current = null
           setAgentStatuses(prev => ({
             ...prev,
             [key]: prev[key] ? { ...prev[key], status: 'idle', tool: null } : prev[key],

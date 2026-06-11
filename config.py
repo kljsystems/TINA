@@ -26,6 +26,7 @@ SLACK_APP_TOKEN        = os.getenv("SLACK_APP_TOKEN",        "")
 SLACK_SAM_BOT_TOKEN    = os.getenv("SLACK_SAM_BOT_TOKEN",    "")
 SLACK_KAI_USER_ID      = os.getenv("SLACK_KAI_USER_ID",      "")  # e.g. U0123456789
 SLACK_SAM_USER_ID      = os.getenv("SLACK_SAM_USER_ID",      "")  # Sam's bot user ID
+SLACK_TINA_USER_ID     = os.getenv("SLACK_TINA_USER_ID",     "")  # Tina's bot user ID for @mentions from Sam
 SLACK_CHANNEL          = os.getenv("SLACK_CHANNEL",          "#tina")
 SLACK_CHANNEL_SAM      = os.getenv("SLACK_CHANNEL_SAM",      "#sam")
 SLACK_CHANNEL_RESEARCH = os.getenv("SLACK_CHANNEL_RESEARCH", "#research")
@@ -65,7 +66,8 @@ DEFAULT_VOICE_ID   = "XrExE9yKIg1WjnnlVkGX"  # Matilda (Australian female, warm)
 KLJ_BASE  = os.getenv("KLJ_BASE", r"C:\Users\nrlocal\Desktop\KLJ")
 
 # ── Obsidian Vault ────────────────────────────────────────────────────────────
-VAULT_DIR = os.path.join(KLJ_BASE, "Memory")
+VAULT_DIR          = os.path.join(KLJ_BASE, "Memory")
+GENERATED_DOCS_DIR = os.path.join(KLJ_BASE, "Generated Docs")
 
 # ── Project registry (name → local path) ─────────────────────────────────────
 PROJECTS = {

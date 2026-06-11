@@ -18,7 +18,7 @@ from config import (
     ANTHROPIC_API_KEY, MODEL, ORCHESTRATOR_MODEL, SYSTEM_PROMPT,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
-    SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID, SLACK_SAM_USER_ID,
+    SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID, SLACK_SAM_USER_ID, SLACK_TINA_USER_ID,
     SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH, SLACK_CHANNEL_AGENTS,
 )
 from tina.agent import TinaAgent
@@ -26,8 +26,8 @@ from tina.agent import TinaAgent
 _agent_lock = asyncio.Lock()
 
 _AGENT_META = {
-    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH, "token": None},
-    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM,      "token": SLACK_SAM_BOT_TOKEN or None},
+    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_AGENTS, "token": None},
+    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_AGENTS, "token": SLACK_SAM_BOT_TOKEN or None},
 }
 
 # Channel → agent key, for routing direct Slack messages to the right agent
@@ -166,6 +166,64 @@ async def _should_escalate_to_kai(question: str) -> bool:
         return False  # default to auto on error
 
 
+async def _sam_acknowledgment(task: str) -> str:
+    """Quick Sam-style 'on it' reply before work starts."""
+    try:
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=50,
+            system=(
+                "You are Sam — a dry, goofy but technically sharp coding agent. "
+                "Write a single short acknowledgment (under 15 words) that you're starting the task. "
+                "Be natural, slightly dry. No preamble. No sign-off."
+            ),
+            messages=[{"role": "user", "content": f"Task: {task[:150]}"}],
+        )
+        return next((b.text for b in resp.content if hasattr(b, "text")), "On it.")
+    except Exception:
+        return "On it."
+
+
+async def _sam_completion_msg(task: str, result: str, tina_mention: str) -> str:
+    """Sam's natural '@Tina done' completion message."""
+    try:
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=80,
+            system=(
+                "You are Sam — a dry, goofy but technically sharp coding agent. "
+                f"Write a short completion message starting with '{tina_mention}' (max 25 words). "
+                "Say you're done and mention specifically what you built or changed (file names, key outcomes). "
+                "Dry, natural tone. No preamble."
+            ),
+            messages=[{"role": "user", "content": f"Task: {task[:100]}\nResult: {result[:400]}"}],
+        )
+        return next((b.text for b in resp.content if hasattr(b, "text")), f"{tina_mention} done.")
+    except Exception:
+        return f"{tina_mention} done."
+
+
+async def _tina_verbal_summary(display: str, result: str) -> str:
+    """Short spoken sentence for Tina to say to Ky when a background agent finishes."""
+    try:
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=60,
+            system=(
+                "You are Tina. Write ONE short spoken sentence (plain prose, no markdown, under 20 words) "
+                f"telling Ky that {display} just finished. Mention specifically what was built or changed. "
+                "Casual, warm, direct."
+            ),
+            messages=[{"role": "user", "content": result[:400]}],
+        )
+        return next((b.text for b in resp.content if hasattr(b, "text")), f"{display} just finished.")
+    except Exception:
+        return f"{display} just finished."
+
+
 async def background_runner(agent_key: str, cls, task: str, on_tool):
     """Called by TinaAgent._dispatch — launches specialist as a fire-and-forget task."""
     asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool))
@@ -173,75 +231,73 @@ async def background_runner(agent_key: str, cls, task: str, on_tool):
 
 async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     """Runs a specialist agent independently with Slack as the conversation channel."""
-    meta         = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL, "token": None})
-    display      = meta["display"]
-    channel      = meta.get("channel", SLACK_CHANNEL)
-    agent_token  = meta.get("token")   # agent's own Slack token (e.g. Sam's)
-    tina_token   = SLACK_TINA_BOT_TOKEN     # Tina always posts as herself
+    meta        = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL, "token": None})
+    display     = meta["display"]
+    channel     = meta.get("channel", SLACK_CHANNEL)
+    agent_token = meta.get("token")
+    tina_token  = SLACK_TINA_BOT_TOKEN
 
-    # Tina posts the task brief
-    await _slack_post(channel, f"*Task from Tina:*\n\n{task}", token=tina_token)
+    sam_mention  = f"<@{SLACK_SAM_USER_ID}>"  if SLACK_SAM_USER_ID  else "@Sam"
+    tina_mention = f"<@{SLACK_TINA_USER_ID}>" if SLACK_TINA_USER_ID else "@Tina"
+    kai_mention  = f"<@{SLACK_KAI_USER_ID}>"  if SLACK_KAI_USER_ID  else "@Ky"
 
     async def question_handler(question: str) -> str:
-        # Sam posts his question as himself
         await _slack_post(channel, question, token=agent_token)
-
-        # Classify: can Tina handle this, or does Ky need to decide?
         escalate, tina_answer = await asyncio.gather(
             _should_escalate_to_kai(question),
             _get_tina_answer(question),
         )
-
         if not escalate:
-            # Low-stakes — Tina answers immediately, Sam never waits
             await _slack_post(channel, tina_answer, token=tina_token)
             return tina_answer
-
-        # High-stakes — park the task and wait for Ky
-        kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "Ky"
         await _slack_post(
             channel,
             f"[ACTION REQUIRED] {kai_mention} — I need your call on this. Sam will wait.\n\n"
             f"_Tina's suggestion if you're unavailable: {tina_answer}_",
             token=tina_token,
         )
-
         q: asyncio.Queue = asyncio.Queue()
         _agent_answer_queues[channel] = q
         try:
-            # Wait up to 4 hours for Ky — task is parked, not timed out
             kai_answer = await asyncio.wait_for(q.get(), timeout=14400)
             await _slack_post(channel, "Got it, thanks.", token=agent_token)
             return kai_answer
         except asyncio.TimeoutError:
-            await _slack_post(
-                channel,
-                "No response after 4 hours — proceeding with Tina's suggestion.",
-                token=agent_token,
-            )
+            await _slack_post(channel, "No response after 4 hours — proceeding with Tina's suggestion.", token=agent_token)
             return tina_answer
         finally:
             _agent_answer_queues.pop(channel, None)
 
     try:
+        # Step 1 — Tina @mentions the agent with the task brief
+        await _slack_post(channel, f"{sam_mention}\n\n{task}", token=tina_token)
+
+        # Step 2 — Agent acknowledges before starting work
+        ack = await _sam_acknowledgment(task)
+        await _slack_post(channel, ack, token=agent_token)
+
         print(f"[{display}] background task started: {task[:80]}...")
         specialist = cls()
         result     = await specialist.run(task, on_tool=on_tool, question_handler=question_handler)
 
-        summary = result[:300] + "…" if len(result) > 300 else result
         print(f"[{display}] background task complete ({len(result)} chars)")
 
-        # Sam posts his own result
-        full_msg = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
-        await _slack_post(channel, full_msg, token=agent_token)
+        # Step 3 — Sam @mentions Tina with a natural completion summary, then posts the full output
+        completion_msg, verbal_summary = await asyncio.gather(
+            _sam_completion_msg(task, result, tina_mention),
+            _tina_verbal_summary(display, result),
+        )
+        full_output = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
+        await _slack_post(channel, completion_msg, token=agent_token)
+        await _slack_post(channel, full_output, token=agent_token)
 
-        # Tina pings #tina so Ky sees it without having to check #sam
-        await _slack_post(SLACK_CHANNEL, f"*{display} just finished.* Full result in {channel}.\n\n_{summary}_", token=tina_token)
+        # Step 4 — Tina notifies Ky in #agents and speaks it
+        await _slack_post(SLACK_CHANNEL_AGENTS, f"{kai_mention} — {verbal_summary}", token=tina_token)
 
-        # Dashboard update
+        summary = result[:300] + "…" if len(result) > 300 else result
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
-        await broadcast({"type": "response", "text": f"{display} finished — check {channel} in Slack"})
-        asyncio.create_task(_tts_stream(f"{display} just finished. Check {channel} in Slack for the result."))
+        await broadcast({"type": "response", "text": verbal_summary})
+        asyncio.create_task(_tts_stream(verbal_summary))
 
     except Exception as e:
         print(f"[{display}] background task error: {e}")
@@ -426,6 +482,7 @@ async def _handle_message(text: str):
     reply = await agent.chat(text, on_tool=on_tool, on_agent_done=on_agent_done, background=True)
     await broadcast({"type": "response", "text": reply})
     asyncio.create_task(_write_memory(text, reply))
+    asyncio.create_task(_slack_post(SLACK_CHANNEL_AGENTS, reply, token=SLACK_TINA_BOT_TOKEN))
     await _tts_stream(reply)
 
 
