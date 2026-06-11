@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import anthropic
 from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, SLACK_SAM_USER_ID, SLACK_KAI_USER_ID
-from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool
+from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool
 from tina.agents.research import ResearchAgent
 from tina.agents.coding   import CodingAgent
 
@@ -18,7 +18,7 @@ _AGENTS: dict[str, type] = {
 }
 
 # ── Direct tools (Tina handles herself without delegating) ────────────────────
-_DIRECT_MODULES  = [weather, vault, calendar_tool, github_tool, slack_tool, docs_tool]
+_DIRECT_MODULES  = [weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool]
 _DIRECT_DEFS     = [d for m in _DIRECT_MODULES for d in m.DEFINITIONS]
 _DIRECT_HANDLERS = {d["name"]: m.handle for m in _DIRECT_MODULES for d in m.DEFINITIONS}
 
@@ -64,7 +64,28 @@ _DELEGATE_TOOL = {
     },
 }
 
-_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL]
+# ── Agent status tool ────────────────────────────────────────────────────────
+_STATUS_TOOL = {
+    "name":        "get_agent_status",
+    "description": (
+        "Check the current progress of a background agent that is actively working on a task. "
+        "Returns what the agent is doing right now, how long they've been running, and their recent tool activity. "
+        "Use this when Ky asks what Sam or Research is up to, how far along they are, or whether they're still working."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "agent": {
+                "type":        "string",
+                "enum":        list(_AGENTS.keys()),
+                "description": "Which agent to check.",
+            },
+        },
+        "required": ["agent"],
+    },
+}
+
+_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL, _STATUS_TOOL]
 
 
 class TinaAgent:
@@ -145,6 +166,10 @@ class TinaAgent:
                 return reply
 
     async def _dispatch(self, name: str, inputs: dict, on_tool=None, on_agent_done=None, background: bool = True) -> str:
+        if name == "get_agent_status":
+            from tina.agent_state import get_status
+            return get_status(inputs.get("agent", ""))
+
         if name == "run_diagnostics":
             if self.diag_runner:
                 await self.diag_runner()

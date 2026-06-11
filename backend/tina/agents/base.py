@@ -5,7 +5,25 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, SUPABASE_URL
+from config import ANTHROPIC_API_KEY, MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
+
+
+async def _load_project_context(task: str) -> str:
+    """Return the stored codebase index for any project mentioned in the task."""
+    task_lower = task.lower()
+    for name in PROJECTS:
+        if name.lower() in task_lower:
+            index_path = os.path.join(VAULT_DIR, "01-Projects", name, "codebase-index.md")
+            if os.path.exists(index_path):
+                try:
+                    with open(index_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    if len(content) > 8000:
+                        content = content[:8000] + "\n...(truncated — full index in vault)"
+                    return f"[{name.upper()} CODEBASE INDEX — auto-injected]\n{content}"
+                except Exception:
+                    pass
+    return ""
 
 _QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
 
@@ -75,6 +93,11 @@ class BaseAgent:
             recent = await load_recent_tasks(self.name.lower(), limit=8)
             if recent:
                 enriched_task = f"{recent}\n\n---\n\nCURRENT TASK:\n\n{task}"
+
+        # Inject codebase index for any project mentioned in the task
+        project_ctx = await _load_project_context(task)
+        if project_ctx:
+            enriched_task = f"{project_ctx}\n\n---\n\n{enriched_task}"
 
         history   = [{"role": "user", "content": enriched_task}]
         qa_rounds = 0

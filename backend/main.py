@@ -9,7 +9,7 @@ import base64
 import json as _json
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 import anthropic
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -37,9 +37,47 @@ _CHANNEL_TO_AGENT = {
 }
 
 
+async def _run_project_reindex():
+    """Ask Sam to refresh the codebase index for every registered project."""
+    from config import PROJECTS
+    from tina.agents.coding import CodingAgent
+    for project_name, project_path in PROJECTS.items():
+        if not os.path.isdir(project_path):
+            continue
+        task = (
+            f"Automated nightly codebase reindex — project: {project_name}\n\n"
+            f"Project path: {project_path}\n\n"
+            f"Write a comprehensive codebase index to the Obsidian vault at "
+            f"01-Projects/{project_name}/codebase-index.md. Overwrite whatever is there.\n\n"
+            f"The index must include:\n"
+            f"1. Full file tree (fs_list recursively from the project root)\n"
+            f"2. One-line description of every significant file\n"
+            f"3. Key frameworks, patterns, and data models\n"
+            f"4. Entry points and main flows\n\n"
+            f"Read the files that define structure — config, models, routes, main components. "
+            f"Write the index in a format that lets you start any task on this codebase "
+            f"without reading files again."
+        )
+        print(f"[Nightly reindex] Starting for {project_name}...")
+        asyncio.create_task(_run_agent_background("coding", CodingAgent, task, None))
+        await asyncio.sleep(120)  # stagger projects so they don't run in parallel
+
+
+async def _schedule_nightly_reindex():
+    """Fires at 2 AM each night."""
+    while True:
+        now    = datetime.now()
+        target = now.replace(hour=2, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        await _run_project_reindex()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(_start_slack())
+    asyncio.create_task(_schedule_nightly_reindex())
     yield
 
 
@@ -231,6 +269,8 @@ async def background_runner(agent_key: str, cls, task: str, on_tool):
 
 async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     """Runs a specialist agent independently with Slack as the conversation channel."""
+    from tina.agent_state import start_task, record_tool, end_task, summarize_input
+
     meta        = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL, "token": None})
     display     = meta["display"]
     channel     = meta.get("channel", SLACK_CHANNEL)
@@ -240,6 +280,11 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     sam_mention  = f"<@{SLACK_SAM_USER_ID}>"  if SLACK_SAM_USER_ID  else "@Sam"
     tina_mention = f"<@{SLACK_TINA_USER_ID}>" if SLACK_TINA_USER_ID else "@Tina"
     kai_mention  = f"<@{SLACK_KAI_USER_ID}>"  if SLACK_KAI_USER_ID  else "@Ky"
+
+    async def tracking_on_tool(name: str, inputs: dict = None):
+        record_tool(agent_key, name, summarize_input(name, inputs or {}))
+        if on_tool:
+            await on_tool(name, inputs)
 
     async def question_handler(question: str) -> str:
         await _slack_post(channel, question, token=agent_token)
@@ -276,9 +321,10 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         ack = await _sam_acknowledgment(task)
         await _slack_post(channel, ack, token=agent_token)
 
+        start_task(agent_key, task)
         print(f"[{display}] background task started: {task[:80]}...")
         specialist = cls()
-        result     = await specialist.run(task, on_tool=on_tool, question_handler=question_handler)
+        result     = await specialist.run(task, on_tool=tracking_on_tool, question_handler=question_handler)
 
         print(f"[{display}] background task complete ({len(result)} chars)")
 
@@ -301,6 +347,8 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
 
     except Exception as e:
         print(f"[{display}] background task error: {e}")
+    finally:
+        end_task(agent_key)
         await _slack_post(channel, f"Hit an error: {e}", token=agent_token)
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Error: {e}"})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
@@ -482,7 +530,6 @@ async def _handle_message(text: str):
     reply = await agent.chat(text, on_tool=on_tool, on_agent_done=on_agent_done, background=True)
     await broadcast({"type": "response", "text": reply})
     asyncio.create_task(_write_memory(text, reply))
-    asyncio.create_task(_slack_post(SLACK_CHANNEL_AGENTS, reply, token=SLACK_TINA_BOT_TOKEN))
     await _tts_stream(reply)
 
 

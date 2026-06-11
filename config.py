@@ -69,11 +69,42 @@ KLJ_BASE  = os.getenv("KLJ_BASE", r"C:\Users\nrlocal\Desktop\KLJ")
 VAULT_DIR          = os.path.join(KLJ_BASE, "Memory")
 GENERATED_DOCS_DIR = os.path.join(KLJ_BASE, "Generated Docs")
 
-# ── Project registry (name → local path) ─────────────────────────────────────
-PROJECTS = {
+# ── Project registry (name → local path) — persisted to data/projects.json ───
+import json as _json
+
+_PROJECTS_DEFAULTS = {
     "tina": os.path.join(KLJ_BASE, "TINA"),
     "kaos": os.path.join(KLJ_BASE, "KAOS"),
 }
+_PROJECTS_FILE = os.path.join(BASE_DIR, "data", "projects.json")
+
+def _load_projects() -> dict:
+    if os.path.exists(_PROJECTS_FILE):
+        try:
+            with open(_PROJECTS_FILE) as f:
+                return _json.load(f)
+        except Exception:
+            pass
+    os.makedirs(os.path.dirname(_PROJECTS_FILE), exist_ok=True)
+    with open(_PROJECTS_FILE, "w") as f:
+        _json.dump(_PROJECTS_DEFAULTS, f, indent=2)
+    return dict(_PROJECTS_DEFAULTS)
+
+PROJECTS: dict = _load_projects()
+
+def register_project(name: str, path: str) -> None:
+    """Add or update a project in the registry and persist it."""
+    PROJECTS[name] = path
+    existing = {}
+    if os.path.exists(_PROJECTS_FILE):
+        try:
+            with open(_PROJECTS_FILE) as f:
+                existing = _json.load(f)
+        except Exception:
+            pass
+    existing[name] = path
+    with open(_PROJECTS_FILE, "w") as f:
+        _json.dump(existing, f, indent=2)
 
 # ── File paths ────────────────────────────────────────────────────────────────
 DATA_DIR        = os.path.join(BASE_DIR, "data")
