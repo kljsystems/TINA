@@ -479,7 +479,21 @@ async def _run_diagnostics_task(on_result):
         if r["status"] in ("fail", "warn")
     ]
     if issues:
+        fail_count = sum(1 for _, s, _ in issues if s == "fail")
+        warn_count = sum(1 for _, s, _ in issues if s == "warn")
+        parts = []
+        if fail_count: parts.append(f"{fail_count} failure{'s' if fail_count > 1 else ''}")
+        if warn_count: parts.append(f"{warn_count} warning{'s' if warn_count > 1 else ''}")
+        summary = " and ".join(parts)
+        names   = ", ".join(label for label, _, _ in issues)
+        speech  = f"Diagnostic complete. I found {summary} — {names}. I'm sending the details to Slack with recommended fixes."
+        await broadcast({"type": "response", "text": speech})
+        asyncio.create_task(_tts_stream(speech))
         asyncio.create_task(_diag_review(issues))
+    else:
+        speech = "All systems healthy. Everything passed."
+        await broadcast({"type": "response", "text": speech})
+        asyncio.create_task(_tts_stream(speech))
 
 
 async def _diag_review(issues: list[tuple[str, str, str]]):
