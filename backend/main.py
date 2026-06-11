@@ -74,10 +74,30 @@ async def _schedule_nightly_reindex():
         await _run_project_reindex()
 
 
+async def _post_restart_announcement():
+    """If this startup was triggered by a self-restart, notify Ky on Slack."""
+    from config import BASE_DIR
+    sentinel = os.path.join(BASE_DIR, "data", "post_restart.json")
+    if not os.path.exists(sentinel):
+        return
+    try:
+        with open(sentinel) as f:
+            data = _json.load(f)
+        os.remove(sentinel)
+        reason = data.get("reason", "code or config change")
+        kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "@Ky"
+        msg = f"{kai_mention} — I restarted successfully. Reason: {reason}. Everything looks good."
+        await asyncio.sleep(2)  # give Slack connection time to establish
+        await _slack_post(SLACK_CHANNEL_AGENTS, msg, token=SLACK_TINA_BOT_TOKEN)
+    except Exception as e:
+        print(f"[lifespan] post-restart announcement failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(_start_slack())
     asyncio.create_task(_schedule_nightly_reindex())
+    asyncio.create_task(_post_restart_announcement())
     yield
 
 
@@ -262,6 +282,39 @@ async def _tina_verbal_summary(display: str, result: str) -> str:
         return f"{display} just finished."
 
 
+async def _agent_verify_response(display: str, task: str, result: str) -> tuple[bool, str]:
+    """
+    Single Haiku call: assess whether the task actually completed AND generate
+    the agent's natural verification reply to Tina's check-in question.
+    Returns (completed: bool, agent_message: str)
+    """
+    try:
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            system=(
+                f"You are {display}, a specialist AI agent. Tina has asked you to verify your work "
+                "before she reports it to Ky.\n\n"
+                "Assess the task and result honestly — look for errors, connection failures, "
+                "incomplete outputs, or missing files.\n\n"
+                'Respond with JSON only: {"completed": true/false, "message": "your natural 1-2 sentence reply to Tina"}\n\n'
+                "If completed: confirm what was actually produced (file names, key outputs).\n"
+                "If failed or partial: explain exactly what went wrong and what's missing.\n"
+                "Be direct. No preamble."
+            ),
+            messages=[{"role": "user", "content": f"Task: {task[:400]}\n\nMy result: {result[:600]}"}],
+        )
+        text = next((b.text for b in resp.content if hasattr(b, "text")), "")
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            data = _json.loads(match.group())
+            return bool(data.get("completed", True)), str(data.get("message", "Looks good."))
+    except Exception as e:
+        print(f"[verify] {display} verification error: {e}")
+    return True, "Looks good from my end."
+
+
 async def background_runner(agent_key: str, cls, task: str, on_tool):
     """Called by TinaAgent._dispatch — launches specialist as a fire-and-forget task."""
     asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool))
@@ -328,22 +381,39 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
 
         print(f"[{display}] background task complete ({len(result)} chars)")
 
-        # Step 3 — Sam @mentions Tina with a natural completion summary, then posts the full output
-        completion_msg, verbal_summary = await asyncio.gather(
-            _sam_completion_msg(task, result, tina_mention),
-            _tina_verbal_summary(display, result),
-        )
+        # Step 3 — Agent @mentions Tina with a natural completion summary, then posts the full output
+        completion_msg = await _sam_completion_msg(task, result, tina_mention)
         full_output = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
         await _slack_post(channel, completion_msg, token=agent_token)
         await _slack_post(channel, full_output, token=agent_token)
 
-        # Step 4 — Tina notifies Ky in #agents and speaks it
-        await _slack_post(SLACK_CHANNEL_AGENTS, f"{kai_mention} — {verbal_summary}", token=tina_token)
+        # Step 3b — Tina asks the agent to verify before reporting to Ky
+        await _slack_post(
+            channel,
+            f"{sam_mention} Before I tell Ky — did that complete fully? Any issues I should flag?",
+            token=tina_token,
+        )
+        completed, verify_msg = await _agent_verify_response(display, task, result)
+        await _slack_post(channel, verify_msg, token=agent_token)
 
-        summary = result[:300] + "…" if len(result) > 300 else result
-        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
-        await broadcast({"type": "response", "text": verbal_summary})
-        asyncio.create_task(_tts_stream(verbal_summary))
+        # Step 4 — Report to Ky based on verification result
+        if completed:
+            verbal_summary = await _tina_verbal_summary(display, result)
+            await _slack_post(SLACK_CHANNEL_AGENTS, f"{kai_mention} — {verbal_summary}", token=tina_token)
+            summary = result[:300] + "…" if len(result) > 300 else result
+            await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
+            await broadcast({"type": "response", "text": verbal_summary})
+            asyncio.create_task(_tts_stream(verbal_summary))
+        else:
+            issue_summary = f"{display} ran into an issue: {verify_msg}"
+            await _slack_post(
+                SLACK_CHANNEL_AGENTS,
+                f"{kai_mention} — heads up, {display}'s task didn't complete fully. Check #agents for details.",
+                token=tina_token,
+            )
+            await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Issue: {verify_msg}"})
+            await broadcast({"type": "response", "text": issue_summary})
+            asyncio.create_task(_tts_stream(issue_summary))
 
     except Exception as e:
         print(f"[{display}] background task error: {e}")

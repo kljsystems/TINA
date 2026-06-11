@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 from .base import BaseAgent
 from tools import github_tool, vault, filesystem_tool
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
-from tools import search, docs_tool
+from tools import search, docs_tool, system_tool, test_tool, git_tool
 
 
 class CodingAgent(BaseAgent):
@@ -75,7 +75,16 @@ TOOLS YOU HAVE
 - fs_list / fs_read / fs_write / fs_mkdir: read and write files directly on disk
 - vault_search / vault_read: project notes, past decisions, architecture context
 - github_list_repos / github_get_repo / github_read_file / github_list_issues: remote codebase access
-- search: docs, packages, API references — use instead of guessing"""
+- search: docs, packages, API references — use instead of guessing
+- read_backend_logs: read recent backend log output — call this after making changes to verify the backend started cleanly or to diagnose a reported error
+- restart_backend: restart the backend process after Python/config changes that need a fresh process
+- health_check: hit /api/status to confirm the backend is actually responding after a restart
+- run_tests: run pytest and return full output — reports clearly if no test suite exists yet
+- git_status / git_diff / git_log: inspect repo state before committing
+- git_add: stage specific files (never use '.' — always list files explicitly to avoid staging .env)
+- git_commit: commit staged changes with a descriptive message
+- git_branch / git_checkout: create and switch branches
+- git_push: push current branch to remote (refused on main — use a feature branch)"""
 
     allow_delegation = True
-    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool]
+    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool, system_tool, test_tool, git_tool]

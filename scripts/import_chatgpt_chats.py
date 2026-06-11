@@ -59,17 +59,27 @@ def flatten_messages(mapping: dict) -> list[dict]:
     """
     Walk the message tree and return messages in conversation order.
     ChatGPT stores messages as a tree (to support regenerated responses).
-    We follow the first child at each branch — the main conversation path.
+    We follow the main conversation path (deepest chain from root).
+
+    Newer exports omit 'children' arrays — we rebuild them by inverting parent refs.
     """
     if not mapping:
         return []
 
-    # Find root: node whose parent is null or not present in the mapping
-    roots = [nid for nid, node in mapping.items() if not node.get("parent") or node["parent"] not in mapping]
+    # Build children map by inverting parent references
+    children_of: dict[str, list[str]] = {nid: [] for nid in mapping}
+    for nid, node in mapping.items():
+        parent = node.get("parent")
+        if parent and parent in children_of:
+            children_of[parent].append(nid)
+
+    # Find root: node whose parent is absent or not in mapping
+    roots = [nid for nid, node in mapping.items()
+             if not node.get("parent") or node["parent"] not in mapping]
     if not roots:
         return []
 
-    # Walk from root following first child, collecting real messages
+    # Walk from root following first child at each branch
     messages = []
     current  = roots[0]
     visited  = set()
@@ -84,16 +94,15 @@ def flatten_messages(mapping: dict) -> list[dict]:
             text   = extract_text(msg)
             status = msg.get("status", "")
 
-            # Only keep user and assistant turns that have actual content
             if role in ("user", "assistant") and text and status != "interrupted":
                 messages.append({
-                    "role":    role,
-                    "text":    text,
-                    "ts":      msg.get("create_time"),
+                    "role": role,
+                    "text": text,
+                    "ts":   msg.get("create_time"),
                 })
 
-        children = node.get("children") or []
-        current  = children[0] if children else None
+        kids    = node.get("children") or children_of.get(current) or []
+        current = kids[0] if kids else None
 
     return messages
 
@@ -186,18 +195,21 @@ def format_index(ordered: list[dict]) -> str:
 def load_conversations(path: Path) -> list[dict]:
     if path.suffix == ".zip":
         with zipfile.ZipFile(path) as zf:
-            names  = zf.namelist()
-            target = next((n for n in names if n.endswith("conversations.json")), None)
-            if not target:
-                print(f"No conversations.json found in ZIP. Contents: {names}")
+            names = zf.namelist()
+            # Support both single conversations.json and split conversations-000.json, -001.json, ...
+            targets = sorted(n for n in names if re.search(r'conversations(-\d+)?\.json$', n))
+            if not targets:
+                print(f"No conversations JSON found in ZIP. Contents: {names}")
                 sys.exit(1)
-            with zf.open(target) as f:
-                data = json.load(f)
+            convs = []
+            for target in targets:
+                with zf.open(target) as f:
+                    data = json.load(f)
+                chunk = data if isinstance(data, list) else data.get("conversations", [])
+                convs.extend(chunk)
     else:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-
-    convs = data if isinstance(data, list) else data.get("conversations", [])
     # Only keep conversations that have actual messages after flattening
     return [c for c in convs if flatten_messages(c.get("mapping") or {})]
 
