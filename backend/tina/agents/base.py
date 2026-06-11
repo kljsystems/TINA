@@ -69,6 +69,28 @@ async def _load_project_context(task: str) -> str:
 _QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
 
 
+def _build_tool_content(result) -> str | list:
+    """
+    Convert a tool result to the correct Anthropic API content format.
+    Most tools return a plain string. Screenshot tool returns a dict with
+    __type='image' which gets converted to a multimodal content block.
+    """
+    if not isinstance(result, dict) or result.get("__type") != "image":
+        return str(result) if not isinstance(result, str) else result
+
+    return [
+        {"type": "text", "text": result.get("text", "Screenshot captured")},
+        {
+            "type":   "image",
+            "source": {
+                "type":       "base64",
+                "media_type": result.get("media_type", "image/png"),
+                "data":       result["data"],
+            },
+        },
+    ]
+
+
 class BaseAgent:
     """
     Specialist agent base class. Each subclass defines:
@@ -179,7 +201,7 @@ class BaseAgent:
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
-                        "content":     result,
+                        "content":     _build_tool_content(result),
                     })
                 history.append({"role": "user", "content": tool_results})
 

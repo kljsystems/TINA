@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 from .base import BaseAgent
 from tools import github_tool, vault, filesystem_tool
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
-from tools import search, docs_tool, system_tool, test_tool, git_tool
+from tools import search, docs_tool, system_tool, test_tool, git_tool, screenshot_tool
 
 
 class CodingAgent(BaseAgent):
@@ -84,7 +84,8 @@ TOOLS YOU HAVE
 - git_add: stage specific files (never use '.' — always list files explicitly to avoid staging .env)
 - git_commit: commit staged changes with a descriptive message
 - git_branch / git_checkout: create and switch branches
-- git_push: push current branch to remote (refused on main — use a feature branch)"""
+- git_push: push current branch to remote (refused on main — use a feature branch)
+- take_screenshot: capture the screen as an image you can actually see — use to inspect the dashboard UI, verify layout changes, or check browser error states"""
 
     allow_delegation = True
-    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool, system_tool, test_tool, git_tool]
+    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool, system_tool, test_tool, git_tool, screenshot_tool]

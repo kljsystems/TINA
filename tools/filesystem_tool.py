@@ -8,6 +8,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROJECTS
 
+# Directories that are never useful to list or read — always skipped
+_SKIP_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv", "env",
+    "dist", "build", ".next", ".nuxt", ".cache", ".parcel-cache",
+    "coverage", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "data",  # runtime data, not source code
+}
+
 DEFINITIONS = [
     {
         "name":        "fs_list_projects",
@@ -16,11 +24,16 @@ DEFINITIONS = [
     },
     {
         "name":        "fs_list",
-        "description": "List the contents of a directory. Returns files and subdirectories. Use to explore project structure.",
+        "description": (
+            "List the contents of a directory. node_modules, .git, __pycache__, venv, dist, build, "
+            "and other noise directories are always excluded. "
+            "Set recursive=true to get the full file tree in one call — use this for codebase indexing."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Absolute path to the directory."},
+                "path":      {"type": "string",  "description": "Absolute path to the directory."},
+                "recursive": {"type": "boolean", "description": "If true, return full recursive file tree (noise dirs excluded). Default false."},
             },
             "required": ["path"],
         },
@@ -69,15 +82,33 @@ def handle(name: str, inputs: dict) -> str:
         return "\n".join(f"{k}: {v}" for k, v in PROJECTS.items())
 
     if name == "fs_list":
-        path = inputs.get("path", "")
+        path      = inputs.get("path", "")
+        recursive = inputs.get("recursive", False)
         try:
             if not os.path.exists(path):
                 return f"Path does not exist: {path}"
             if not os.path.isdir(path):
                 return f"Not a directory: {path}"
-            entries = sorted(os.listdir(path))
-            lines   = [e + ("/" if os.path.isdir(os.path.join(path, e)) else "") for e in entries]
-            return "\n".join(lines) if lines else "(empty directory)"
+            if recursive:
+                lines = []
+                for dirpath, dirnames, filenames in os.walk(path):
+                    # Prune noise dirs in-place so os.walk doesn't descend into them
+                    dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+                    rel = os.path.relpath(dirpath, path)
+                    prefix = "" if rel == "." else rel + os.sep
+                    for fname in sorted(filenames):
+                        lines.append(prefix + fname)
+                return "\n".join(lines) if lines else "(empty)"
+            else:
+                entries = sorted(os.listdir(path))
+                lines   = []
+                for e in entries:
+                    full = os.path.join(path, e)
+                    if os.path.isdir(full):
+                        lines.append(e + ("/" if e not in _SKIP_DIRS else "/  [skipped]"))
+                    else:
+                        lines.append(e)
+                return "\n".join(lines) if lines else "(empty directory)"
         except Exception as e:
             return f"Error listing {path}: {e}"
 
