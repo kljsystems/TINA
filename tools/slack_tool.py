@@ -4,9 +4,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from config import SLACK_BOT_TOKEN, SLACK_CHANNEL
+    from config import SLACK_TINA_BOT_TOKEN, SLACK_CHANNEL
 except Exception:
-    SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+    SLACK_TINA_BOT_TOKEN = os.getenv("SLACK_TINA_BOT_TOKEN", "")
     SLACK_CHANNEL   = os.getenv("SLACK_CHANNEL", "#tina")
 
 DEFINITIONS = [
@@ -43,9 +43,9 @@ DEFINITIONS = [
 
 def _client():
     from slack_sdk import WebClient
-    if not SLACK_BOT_TOKEN:
-        raise RuntimeError("SLACK_BOT_TOKEN not set in .env")
-    return WebClient(token=SLACK_BOT_TOKEN)
+    if not SLACK_TINA_BOT_TOKEN:
+        raise RuntimeError("SLACK_TINA_BOT_TOKEN not set in .env")
+    return WebClient(token=SLACK_TINA_BOT_TOKEN)
 
 
 def _resolve_channel(channel: str | None) -> str:

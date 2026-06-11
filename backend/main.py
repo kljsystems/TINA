@@ -18,7 +18,7 @@ from config import (
     ANTHROPIC_API_KEY, MODEL, ORCHESTRATOR_MODEL, SYSTEM_PROMPT,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
-    SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID,
+    SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID, SLACK_SAM_USER_ID,
     SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH, SLACK_CHANNEL_AGENTS,
 )
 from tina.agent import TinaAgent
@@ -76,7 +76,7 @@ async def broadcast(data: dict):
 
 def _make_slack_client(token: str | None = None):
     from slack_sdk import WebClient
-    return WebClient(token=token or SLACK_BOT_TOKEN)
+    return WebClient(token=token or SLACK_TINA_BOT_TOKEN)
 
 
 async def _slack_post(channel: str, message: str, token: str | None = None):
@@ -96,7 +96,7 @@ async def _resolve_channel_name(channel_id: str) -> str:
     try:
         def _fetch():
             from slack_sdk import WebClient
-            info = WebClient(token=SLACK_BOT_TOKEN).conversations_info(channel=channel_id)
+            info = WebClient(token=SLACK_TINA_BOT_TOKEN).conversations_info(channel=channel_id)
             return "#" + info["channel"]["name"]
         name = await asyncio.to_thread(_fetch)
         _channel_name_cache[channel_id] = name
@@ -177,7 +177,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
     display      = meta["display"]
     channel      = meta.get("channel", SLACK_CHANNEL)
     agent_token  = meta.get("token")   # agent's own Slack token (e.g. Sam's)
-    tina_token   = SLACK_BOT_TOKEN     # Tina always posts as herself
+    tina_token   = SLACK_TINA_BOT_TOKEN     # Tina always posts as herself
 
     # Tina posts the task brief
     await _slack_post(channel, f"*Task from Tina:*\n\n{task}", token=tina_token)
@@ -434,7 +434,7 @@ async def chat_endpoint(body: dict):
 
 
 async def _start_slack():
-    if not SLACK_BOT_TOKEN or not SLACK_APP_TOKEN:
+    if not SLACK_TINA_BOT_TOKEN or not SLACK_APP_TOKEN:
         print("[Slack] Tokens not configured — Slack listener not started.")
         return
     try:
@@ -442,7 +442,7 @@ async def _start_slack():
         from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
         import httpx as _httpx
 
-        bolt = BoltApp(token=SLACK_BOT_TOKEN)
+        bolt = BoltApp(token=SLACK_TINA_BOT_TOKEN)
 
         @bolt.message("")
         async def on_message(message, say, logger):
