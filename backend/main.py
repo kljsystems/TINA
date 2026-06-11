@@ -462,10 +462,42 @@ async def run_diagnostics():
 
 async def _run_diagnostics_task(on_result):
     from tina.diagnostics import run_all
+    results: dict[str, dict] = {}
+
+    async def collecting_result(check_id, label, status, detail):
+        results[check_id] = {"label": label, "status": status, "detail": detail}
+        await on_result(check_id, label, status, detail)
+
     try:
-        await run_all(on_result)
+        await run_all(collecting_result)
     finally:
         await broadcast({"type": "diag_complete"})
+
+    issues = [
+        (r["label"], r["status"], r["detail"])
+        for r in results.values()
+        if r["status"] in ("fail", "warn")
+    ]
+    if issues:
+        asyncio.create_task(_diag_review(issues))
+
+
+async def _diag_review(issues: list[tuple[str, str, str]]):
+    """Have Tina review diagnostic issues — fix what she can, notify Ky about the rest."""
+    lines = "\n".join(f"{status.upper()}: {label} — {detail}" for label, status, detail in issues)
+    prompt = (
+        f"A system diagnostic just completed and found these issues:\n\n{lines}\n\n"
+        "For each issue: fix it yourself if you have the tools to do so. "
+        "For anything that needs Ky's action (buying credits, re-authenticating, etc.), "
+        "send a Slack message to #tina with clear, specific steps — include links where relevant. "
+        "Be concise. Don't list issues that are already resolved."
+    )
+    try:
+        reply = await agent.chat(prompt, background=False)
+        await broadcast({"type": "response", "text": reply})
+        asyncio.create_task(_tts_stream(reply))
+    except Exception as e:
+        print(f"[diag_review] error: {e}")
 
 
 @app.post("/api/spawn-hud")

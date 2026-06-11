@@ -172,14 +172,19 @@ async def _check_slack_sam():
 async def _check_calendar():
     token_path = os.path.join(DATA_DIR, "token.json")
     if not os.path.exists(token_path):
-        return "fail", "token.json not found — run OAuth flow"
+        return "fail", "token.json not found — delete data/token.json and restart to re-auth"
     try:
         import json
+        from datetime import datetime, timezone
         with open(token_path) as f:
             tok = json.load(f)
-        expiry = tok.get("expiry") or tok.get("token_expiry", "")
-        scopes = tok.get("scopes", tok.get("token_uri", ""))
-        return "pass", f"Token present · expiry: {str(expiry)[:19]}"
+        expiry_str = tok.get("expiry") or tok.get("token_expiry", "")
+        if expiry_str:
+            expiry_dt = datetime.fromisoformat(str(expiry_str).replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if expiry_dt < now:
+                return "warn", f"Token expired {expiry_str[:19]} — will auto-refresh on next use"
+        return "pass", f"Token valid · expiry: {str(expiry_str)[:19]}"
     except Exception as e:
         return "warn", f"Token file exists but unreadable: {e}"
 
