@@ -23,6 +23,8 @@ export function useTina() {
   const [alert,        setAlert]        = useState(null)
   const [lastResponse, setLastResponse] = useState(null)
   const [services,     setServices]     = useState(null)
+  const [diagRunning,  setDiagRunning]  = useState(false)
+  const [diagResults,  setDiagResults]  = useState({})
   const [turnCount,    setTurnCount]    = useState(0)
   const [sessionStart]                  = useState(Date.now())
   const [agentStatuses, setAgentStatuses] = useState({
@@ -207,6 +209,16 @@ export function useTina() {
           }
           break
         }
+        case 'diag_start':
+          setDiagRunning(true)
+          setDiagResults(Object.fromEntries((data.checks || []).map(id => [id, { status: 'running', label: id, detail: '' }])))
+          break
+        case 'diag_update':
+          setDiagResults(prev => ({ ...prev, [data.id]: { status: data.status, label: data.label, detail: data.detail } }))
+          break
+        case 'diag_complete':
+          setDiagRunning(false)
+          break
         case 'system':
           if (data.voice)              setVoice(data.voice)
           if (data.user)               setUser(u => ({ ...u, name: data.user }))
@@ -292,6 +304,7 @@ export function useTina() {
     connected, tinaState, isRecording, activeAgent, conversation,
     stats, voice, user, lastTool, alert, lastResponse,
     services, turnCount, sessionStart, agentStatuses,
+    diagRunning, diagResults,
     sendMessage, startRecording, stopRecording,
   }
 }

@@ -435,6 +435,28 @@ async def get_status():
     }
 
 
+@app.post("/api/diagnostics")
+async def run_diagnostics():
+    """Trigger a full system diagnostic. Results stream to all connected dashboards via WebSocket."""
+    from tina.diagnostics import CHECKS, run_all
+    check_ids = [cid for cid, _ in CHECKS]
+    await broadcast({"type": "diag_start", "checks": check_ids})
+
+    async def on_result(check_id: str, label: str, status: str, detail: str):
+        await broadcast({"type": "diag_update", "id": check_id, "label": label, "status": status, "detail": detail})
+
+    asyncio.create_task(_run_diagnostics_task(on_result))
+    return {"ok": True}
+
+
+async def _run_diagnostics_task(on_result):
+    from tina.diagnostics import run_all
+    try:
+        await run_all(on_result)
+    finally:
+        await broadcast({"type": "diag_complete"})
+
+
 @app.post("/api/spawn-hud")
 async def spawn_hud():
     response = await _hud_client.messages.create(

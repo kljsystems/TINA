@@ -260,8 +260,108 @@ const ts = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+function DiagOverlay({ results, running, onClose }) {
+  const checks = Object.entries(results)
+  const total  = checks.length
+  const done   = checks.filter(([, r]) => r.status !== 'running').length
+  const passed = checks.filter(([, r]) => r.status === 'pass').length
+  const failed = checks.filter(([, r]) => r.status === 'fail').length
+  const warned = checks.filter(([, r]) => r.status === 'warn').length
+
+  const dot = status => {
+    if (status === 'running') return { bg: '#6b7280', anim: 'agentpulse 0.8s ease-in-out infinite' }
+    if (status === 'pass')    return { bg: '#4ade80', anim: 'none' }
+    if (status === 'fail')    return { bg: '#ef4444', anim: 'none' }
+    if (status === 'warn')    return { bg: '#f59e0b', anim: 'none' }
+    return { bg: '#ffffff22', anim: 'none' }
+  }
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 30,
+      background: 'rgba(8,4,15,0.92)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{
+        width: 560, maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+        border: `1px solid ${P}66`, borderRadius: 6,
+        background: `${PF}ee`, boxShadow: `0 0 40px ${P}33`,
+        fontFamily: "'Courier New', monospace",
+      }}>
+        {/* Header */}
+        <div style={{ padding: '14px 20px', borderBottom: `1px solid ${P}33`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 11, letterSpacing: 4, color: PG }}>SYSTEM DIAGNOSTICS</div>
+            <div style={{ fontSize: 9, letterSpacing: 2, opacity: 0.45, marginTop: 3 }}>
+              {running ? `RUNNING · ${done}/${total} complete` : `COMPLETE · ${passed} PASS · ${warned} WARN · ${failed} FAIL`}
+            </div>
+          </div>
+          {!running && (
+            <button onClick={onClose} style={{ ...btnStyle(true, false), padding: '4px 12px', fontSize: 9 }}>
+              CLOSE
+            </button>
+          )}
+        </div>
+
+        {/* Progress bar */}
+        <div style={{ height: 2, background: '#ffffff11' }}>
+          <div style={{
+            height: '100%',
+            width: total ? `${(done / total) * 100}%` : '0%',
+            background: failed > 0 ? '#ef4444' : warned > 0 ? '#f59e0b' : `linear-gradient(90deg,${PD},${PG})`,
+            transition: 'width 0.3s ease',
+            boxShadow: `0 0 6px ${PG}`,
+          }} />
+        </div>
+
+        {/* Check list */}
+        <div style={{ overflowY: 'auto', padding: '10px 0' }}>
+          {checks.map(([id, result]) => {
+            const d = dot(result.status)
+            return (
+              <div key={id} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 12,
+                padding: '7px 20px',
+                borderBottom: `1px solid ${P}11`,
+                animation: result.status !== 'running' ? 'fadein 0.2s ease' : 'none',
+              }}>
+                <span style={{
+                  flexShrink: 0, marginTop: 2,
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: d.bg, display: 'inline-block',
+                  boxShadow: result.status !== 'running' ? `0 0 6px ${d.bg}` : 'none',
+                  animation: d.anim,
+                }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 10, letterSpacing: 2, opacity: result.status === 'running' ? 0.5 : 0.9 }}>
+                      {result.label || id.toUpperCase()}
+                    </span>
+                    <span style={{
+                      fontSize: 9, letterSpacing: 1,
+                      color: d.bg,
+                      opacity: result.status === 'running' ? 0.4 : 0.9,
+                    }}>
+                      {result.status === 'running' ? '...' : result.status.toUpperCase()}
+                    </span>
+                  </div>
+                  {result.detail && result.status !== 'running' && (
+                    <div style={{ fontSize: 9, letterSpacing: 0.5, opacity: 0.45, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {result.detail}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
-  const { connected, tinaState, isRecording, activeAgent, conversation, lastResponse, services, turnCount, sessionStart, agentStatuses, sendMessage, startRecording, stopRecording } = useTina()
+  const { connected, tinaState, isRecording, activeAgent, conversation, lastResponse, services, turnCount, sessionStart, agentStatuses, diagRunning, diagResults, sendMessage, startRecording, stopRecording } = useTina()
 
   const [elements,       setElements]       = useState([])
   const [loading,        setLoading]        = useState(false)
@@ -269,6 +369,7 @@ export default function App() {
   const [input,          setInput]          = useState('')
   const [time,           setTime]           = useState(new Date())
   const [showResponse,   setShowResponse]   = useState(false)
+  const [showDiag,       setShowDiag]       = useState(false)
   const inputRef        = useRef(null)
   const convoLen        = useRef(0)
   const prevConn        = useRef(false)
@@ -292,6 +393,9 @@ export default function App() {
       responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
     }
   }, [tinaState])
+
+  // Auto-show diag overlay when running
+  useEffect(() => { if (diagRunning) setShowDiag(true) }, [diagRunning])
 
   // Clock
   useEffect(() => {
@@ -379,6 +483,15 @@ export default function App() {
       ].map((s, i) => (
         <div key={i} style={{ position: 'absolute', width: 22, height: 22, opacity: isOffline ? 0.2 : 0.5, ...s }} />
       ))}
+
+      {/* Diagnostic overlay */}
+      {showDiag && Object.keys(diagResults).length > 0 && (
+        <DiagOverlay
+          results={diagResults}
+          running={diagRunning}
+          onClose={() => setShowDiag(false)}
+        />
+      )}
 
       {/* Offline overlay */}
       {isOffline && (
@@ -527,6 +640,13 @@ export default function App() {
             <div style={{ display: 'flex', gap: 6 }}>
               <button onClick={spawnHud} disabled={loading || !connected} style={{ ...btnStyle(connected && !loading), flex: 1 }}>
                 {loading ? 'THINKING...' : '✦ SPAWN HUD'}
+              </button>
+              <button
+                onClick={() => { fetch('http://localhost:8000/api/diagnostics', { method: 'POST' }); addLog('Diagnostics started') }}
+                disabled={!connected || diagRunning}
+                style={btnStyle(connected && !diagRunning)}
+              >
+                {diagRunning ? '...' : 'DIAG'}
               </button>
               <button onClick={() => { setElements(e => e.filter(x => x.persistent)); addLog('Ephemeral cleared') }} style={btnStyle(true, true)}>
                 CLEAR
