@@ -32,7 +32,7 @@ _FOLDERS = {
     "project":  None,  # resolved dynamically to 01-Projects/{name}/Notes
 }
 
-_SYSTEM = """You are TINA's memory core. After each conversation turn, extract knowledge worth keeping as Obsidian notes.
+_SYSTEM = """You are TINA's memory core. After each conversation turn, extract knowledge worth keeping as permanent Obsidian notes.
 
 VAULT STRUCTURE:
 - 02-Tina-Memory/Learned/     — facts, preferences, patterns about Ky and how he works
@@ -59,9 +59,25 @@ LINKING RULES — this is critical for the knowledge graph:
 
 NOTE TYPES:
 - "fact"     → things Ky told you, preferences, skills, opinions, patterns
-- "decision" → choices made in this conversation, what was decided and why, what was rejected
+- "decision" → choices made in this conversation — use the template below
 - "person"   → a person Ky mentioned — their role, relationship to Ky, context
 - "project"  → technical context, architecture decisions, discoveries specific to a project
+
+DECISION NOTES — use this structure, it's what Sam reads for context:
+# [Decision title]
+
+**Decision:** [what was decided, one sentence]
+**Why:** [the reasoning — constraints, preferences, priorities that drove this choice]
+**Rejected alternatives:** [what else was considered and why it was ruled out]
+**Impact:** [what this affects, what it enables or prevents]
+
+[[relevant-links]]
+
+CAPTURE AGGRESSIVELY — the "why" is what matters most:
+- If Ky explains a constraint ("we can't do X because Y"), write it
+- If an approach is chosen over alternatives, write what was rejected and why
+- If Ky expresses a strong preference or opinion, write it
+- Architectural decisions that Sam will encounter when working on the codebase
 
 OUTPUT FORMAT — return ONLY a JSON array:
 [
@@ -75,14 +91,17 @@ OUTPUT FORMAT — return ONLY a JSON array:
 
 FRONTMATTER: date + tags array only. Tags should include: tina-memory, the note type, and any project names.
 FILENAME: YYYY-MM-DD-short-slug.md (lowercase, hyphens)
-LENGTH: under 250 words per note. Dense and linked, not verbose.
+LENGTH: under 300 words per note. Dense and linked, not verbose.
 
 Skip the whole turn if nothing meaningful happened (greetings, one-word replies, simple lookups with no lasting value).
-If something is worth remembering, write it. If a decision was made, write it. If something interesting about Ky came up, write it.
 Return [] if nothing worth keeping."""
 
 
-async def extract_and_write_notes(user_msg: str, tina_reply: str) -> None:
+async def extract_and_write_notes(
+    user_msg: str,
+    tina_reply: str,
+    history: list[dict] | None = None,
+) -> None:
     """Extract knowledge from a conversation turn and write linked notes to vault. Never raises."""
     try:
         now   = datetime.now()
@@ -101,15 +120,28 @@ async def extract_and_write_notes(user_msg: str, tina_reply: str) -> None:
             f"(Link to any other project CLAUDE file if that project is discussed)\n\nKNOWN PROJECTS: {project_list}\n{project_hubs}"
         )
 
+        # Build conversation context — recent history gives decisions spanning multiple turns
+        context_parts = [f"Date: {today}  Time: {time}\n"]
+        if history:
+            recent = history[-8:]  # last 4 exchanges (user+assistant pairs)
+            for turn in recent:
+                role    = "Ky" if turn.get("role") == "user" else "Tina"
+                content = turn.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("text"))
+                if content and isinstance(content, str):
+                    context_parts.append(f"{role}: {content[:600]}")
+        else:
+            context_parts.append(f"Ky said: {user_msg}")
+            context_parts.append(f"Tina replied: {tina_reply}")
+
+        context_parts.append(f"\n--- LATEST TURN ---\nKy said: {user_msg}\nTina replied: {tina_reply}")
+
         response = await _client.messages.create(
             model=ORCHESTRATOR_MODEL,
             max_tokens=2000,
             system=system,
-            messages=[{"role": "user", "content": (
-                f"Date: {today}  Time: {time}\n\n"
-                f"Ky said: {user_msg}\n\n"
-                f"Tina replied: {tina_reply}"
-            )}],
+            messages=[{"role": "user", "content": "\n\n".join(context_parts)}],
         )
 
         raw = response.content[0].text.strip()

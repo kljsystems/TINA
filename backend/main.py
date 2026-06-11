@@ -626,13 +626,13 @@ async def _handle_message(text: str):
 
     reply = await agent.chat(text, on_tool=on_tool, on_agent_done=on_agent_done, background=True)
     await broadcast({"type": "response", "text": reply})
-    asyncio.create_task(_write_memory(text, reply))
+    asyncio.create_task(_write_memory(text, reply, list(agent.history)))
     await _tts_stream(reply)
 
 
-async def _write_memory(user_msg: str, tina_reply: str) -> None:
+async def _write_memory(user_msg: str, tina_reply: str, history: list[dict]) -> None:
     from tina.memory import extract_and_write_notes
-    await extract_and_write_notes(user_msg, tina_reply)
+    await extract_and_write_notes(user_msg, tina_reply, history=history)
 
 
 @app.get("/api/status")

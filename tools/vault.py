@@ -14,6 +14,34 @@ except Exception:
 
 DEFINITIONS = [
     {
+        "name": "vault_write",
+        "description": (
+            "Write a note directly to the vault. Use proactively to capture architectural decisions, "
+            "the reasoning behind choices, what was rejected and why — anything Sam will need to understand "
+            "context later. Write in Obsidian markdown with [[wikilinks]]. "
+            "Good times to call this: when a significant technical decision is made, when Ky explains "
+            "a constraint or preference, when an approach is chosen over alternatives."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder": {
+                    "type":        "string",
+                    "description": "Subfolder relative to vault root, e.g. '02-Tina-Memory/Decisions' or '01-Projects/tina/Notes'",
+                },
+                "filename": {
+                    "type":        "string",
+                    "description": "Note filename, e.g. '2026-06-11-decision-slug.md'",
+                },
+                "content": {
+                    "type":        "string",
+                    "description": "Full note in Obsidian markdown. Include frontmatter (tags, date) and [[wikilinks]].",
+                },
+            },
+            "required": ["folder", "filename", "content"],
+        },
+    },
+    {
         "name": "vault_search",
         "description": (
             "Search Kai's Obsidian knowledge vault — past conversations, stored facts, "
@@ -110,7 +138,21 @@ def _read(filename: str, folder: str | None) -> str:
         return f"Could not read note: {e}"
 
 
+def _write(folder: str, filename: str, content: str) -> str:
+    path = VAULT_ROOT / folder / filename
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            return f"Note already exists: {path.relative_to(VAULT_ROOT)} — use a different filename or read it first."
+        path.write_text(content, encoding="utf-8")
+        return f"Written: {path.relative_to(VAULT_ROOT)}"
+    except Exception as e:
+        return f"Could not write note: {e}"
+
+
 def handle(name: str, inputs: dict) -> str:
+    if name == "vault_write":
+        return _write(inputs.get("folder", ""), inputs.get("filename", ""), inputs.get("content", ""))
     if name == "vault_search":
         return _search(inputs.get("query", ""), inputs.get("folder"))
     if name == "vault_read":
