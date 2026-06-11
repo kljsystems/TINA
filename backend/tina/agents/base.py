@@ -186,7 +186,7 @@ class BaseAgent:
         await save_turn(self.name.lower(), session_id, "user",      task)
         await save_turn(self.name.lower(), session_id, "assistant", result)
 
-    async def run(self, task: str, on_tool=None, question_handler=None, plan_handler=None) -> str:
+    async def run(self, task: str, on_tool=None, on_tool_result=None, question_handler=None, plan_handler=None) -> str:
         """
         Run the agent on a task and return the result as a string.
         If question_handler is provided and the agent writes [QUESTION: ...],
@@ -245,6 +245,8 @@ class BaseAgent:
                             await asyncio.to_thread(handler, block.name, block.input)
                             if handler else f"Unknown tool: {block.name}"
                         )
+                        if on_tool_result:
+                            await on_tool_result(block.name, block.input, result)
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,

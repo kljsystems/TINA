@@ -243,9 +243,15 @@ async def _check_agents():
     try:
         from tina.agents.coding   import CodingAgent
         from tina.agents.research import ResearchAgent
-        sam      = CodingAgent()
-        research = ResearchAgent()
-        return "pass", f"Sam ({len(sam._definitions)} tools) · Research ({len(research._definitions)} tools)"
+        from tina.agents.email    import EmailAgent
+        sam     = CodingAgent()
+        charlie = ResearchAgent()
+        tristan = EmailAgent()
+        return "pass", (
+            f"{sam.name} ({len(sam._definitions)} tools) · "
+            f"{charlie.name} ({len(charlie._definitions)} tools) · "
+            f"{tristan.name} ({len(tristan._definitions)} tools)"
+        )
     except Exception as e:
         return "fail", str(e)[:100]
 
@@ -274,15 +280,4 @@ async def run_all(on_result):
     Run all checks concurrently. Calls on_result(id, label, status, detail) as each finishes.
     status is one of: "pass", "fail", "warn"
     """
-    async def _run(check_id, label):
-        runner = _RUNNERS.get(check_id)
-        if not runner:
-            await on_result(check_id, label, "warn", "No runner defined")
-            return
-        try:
-            status, detail = await runner()
-        except Exception as e:
-            status, detail = "fail", str(e)[:120]
-        await on_result(check_id, label, status, detail)
-
-    await asyncio.gather(*[_run(cid, lbl) for cid, lbl in CHECKS])
+    async def _run(check_id, la

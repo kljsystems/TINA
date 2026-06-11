@@ -4,10 +4,15 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)                            # TINA root → config.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # backend/ → tina package
 
+# Force UTF-8 on Windows so emojis and non-ASCII characters print correctly
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 import asyncio
 import base64
 import json as _json
 import re
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 import httpx
@@ -20,20 +25,82 @@ from config import (
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
     SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID, SLACK_SAM_USER_ID, SLACK_TINA_USER_ID,
     SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH, SLACK_CHANNEL_AGENTS,
+    SLACK_TRISTAN_BOT_TOKEN, SLACK_CHANNEL_TRISTAN,
 )
 from tina.agent import TinaAgent
 
 _agent_lock = asyncio.Lock()
 
+# ── Tool → dashboard panel mapping ────────────────────────────────────────────
+_TOOL_TO_PANEL = {
+    "get_weather":       "weather",
+    "search":            "search",
+    "news":              "news",
+    "wikipedia":         "search",
+    "vault_search":      "vault",
+    "vault_read":        "vault",
+    "list_events":       "calendar",
+    "create_event":      "calendar",
+    "update_event":      "calendar",
+    "delete_event":      "calendar",
+    "github_get_repo":   "github",
+    "github_list_repos": "github",
+    "github_list_issues":"github",
+    "github_list_prs":   "github",
+    "github_read_file":  "github",
+    "read_backend_logs": "logs",
+    "health_check":      "system",
+    "restart_backend":   "system",
+    "run_tests":         "system",
+}
+_TOOL_TTL = {
+    "get_weather":  30000,
+    "list_events":  25000, "create_event": 20000, "update_event": 15000,
+    "search":       20000, "news": 20000, "wikipedia": 20000,
+    "vault_search": 15000, "vault_read": 15000,
+    "github_get_repo": 20000, "github_list_repos": 20000,
+    "github_list_issues": 20000, "github_list_prs": 20000, "github_read_file": 20000,
+    "read_backend_logs": 25000, "health_check": 15000,
+    "restart_backend": 20000, "run_tests": 20000,
+}
+
+def _load_prefs() -> dict:
+    from config import PREFS_FILE
+    defaults = {"activity_log": True}
+    if not os.path.exists(PREFS_FILE):
+        return defaults
+    try:
+        return {**defaults, **_json.load(open(PREFS_FILE))}
+    except Exception:
+        return defaults
+
+
+def _make_tool_result_event(name: str, result) -> dict | None:
+    panel_type = _TOOL_TO_PANEL.get(name)
+    if not panel_type:
+        return None
+    text = str(result) if not isinstance(result, str) else result
+    if len(text) > 700:
+        text = text[:700] + "…"
+    return {
+        "type":       "tool_result",
+        "name":       name,
+        "panel_type": panel_type,
+        "text":       text,
+        "ttl":        _TOOL_TTL.get(name, 15000),
+    }
+
 _AGENT_META = {
-    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_AGENTS, "token": None},
-    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_AGENTS, "token": SLACK_SAM_BOT_TOKEN or None},
+    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_AGENTS,  "token": None},
+    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_AGENTS,  "token": SLACK_SAM_BOT_TOKEN      or None},
+    "email":    {"display": "Tristan",  "color": "#f59e0b", "glow": "#fcd34d", "channel": SLACK_CHANNEL_TRISTAN, "token": SLACK_TRISTAN_BOT_TOKEN   or None},
 }
 
 # Channel → agent key, for routing direct Slack messages to the right agent
 _CHANNEL_TO_AGENT = {
     SLACK_CHANNEL_SAM:      "coding",
     SLACK_CHANNEL_RESEARCH: "research",
+    SLACK_CHANNEL_TRISTAN:  "email",
 }
 
 
@@ -96,11 +163,27 @@ async def _post_restart_announcement():
         print(f"[lifespan] post-restart announcement failed: {e}")
 
 
+async def _drain_preview_queue():
+    """Drain fs_write events and broadcast them to all connected dashboards."""
+    import queue as _queue
+    from tools import filesystem_tool as _ft
+    while True:
+        await asyncio.sleep(0.1)
+        while True:
+            try:
+                item = _ft._preview_queue.get_nowait()
+                await broadcast({"type": "code_preview", "path": item["path"], "content": item["content"]})
+            except _queue.Empty:
+                break
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(_start_slack())
     asyncio.create_task(_schedule_nightly_reindex())
     asyncio.create_task(_post_restart_announcement())
+    asyncio.create_task(_drain_preview_queue())
+    asyncio.create_task(_resume_pending_tasks())
     yield
 
 
@@ -318,12 +401,65 @@ async def _agent_verify_response(display: str, task: str, result: str) -> tuple[
     return True, "Looks good from my end."
 
 
+# ── Pending-task persistence (survive restarts) ───────────────────────────────
+
+def _save_pending_task(task_id: str, agent_key: str, task: str) -> None:
+    from config import PENDING_TASKS_DIR
+    os.makedirs(PENDING_TASKS_DIR, exist_ok=True)
+    with open(os.path.join(PENDING_TASKS_DIR, f"{task_id}.json"), "w") as f:
+        _json.dump({"task_id": task_id, "agent_key": agent_key, "task": task,
+                    "started_at": datetime.now().isoformat()}, f)
+
+def _clear_pending_task(task_id: str) -> None:
+    from config import PENDING_TASKS_DIR
+    try:
+        os.remove(os.path.join(PENDING_TASKS_DIR, f"{task_id}.json"))
+    except FileNotFoundError:
+        pass
+
+async def _resume_pending_tasks() -> None:
+    """On startup, re-dispatch any tasks that were interrupted by a prior restart."""
+    from config import PENDING_TASKS_DIR
+    from tina.agent import _AGENTS
+    if not os.path.isdir(PENDING_TASKS_DIR):
+        return
+    files = [f for f in os.listdir(PENDING_TASKS_DIR) if f.endswith(".json")]
+    if not files:
+        return
+    await asyncio.sleep(4)  # let Slack connection establish first
+    for fname in files:
+        path = os.path.join(PENDING_TASKS_DIR, fname)
+        try:
+            with open(path) as f:
+                spec = _json.load(f)
+            agent_key = spec["agent_key"]
+            task      = spec["task"]
+            task_id   = spec["task_id"]
+            cls       = _AGENTS.get(agent_key)
+            if not cls:
+                print(f"[resume] Unknown agent '{agent_key}' in {fname} — removing")
+                os.remove(path)
+                continue
+            meta    = _AGENT_META.get(agent_key, {})
+            channel = meta.get("channel", SLACK_CHANNEL)
+            print(f"[resume] Resuming interrupted {agent_key} task: {task[:60]}...")
+            await _slack_post(channel, "_Resuming after restart — picking up where I left off._",
+                              token=meta.get("token"))
+            asyncio.create_task(_run_agent_background(agent_key, cls, task, None,
+                                                      task_id=task_id, retried=True))
+        except Exception as e:
+            print(f"[resume] Failed to resume {fname}: {e}")
+
+
 async def background_runner(agent_key: str, cls, task: str, on_tool):
-    """Called by TinaAgent._dispatch — launches specialist as a fire-and-forget task."""
-    asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool))
+    """Called by TinaAgent._dispatch — persists the task then launches it."""
+    task_id = str(uuid.uuid4())
+    _save_pending_task(task_id, agent_key, task)
+    asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool, task_id=task_id))
 
 
-async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
+async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
+                                task_id: str = None, retried: bool = False):
     """Runs a specialist agent independently with Slack as the conversation channel."""
     from tina.agent_state import start_task, record_tool, end_task, summarize_input
 
@@ -341,6 +477,11 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
         record_tool(agent_key, name, summarize_input(name, inputs or {}))
         if on_tool:
             await on_tool(name, inputs)
+
+    async def tracking_on_tool_result(name: str, inputs: dict, result):
+        event = _make_tool_result_event(name, result)
+        if event:
+            await broadcast(event)
 
     async def question_handler(question: str) -> str:
         await _slack_post(channel, question, token=agent_token)
@@ -394,17 +535,18 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
             _agent_answer_queues.pop(channel, None)
 
     try:
-        # Step 1 — Tina @mentions the agent with the task brief
-        await _slack_post(channel, f"{sam_mention}\n\n{task}", token=tina_token)
+        if not retried:
+            # Step 1 — Tina @mentions the agent with the task brief
+            await _slack_post(channel, f"{sam_mention}\n\n{task}", token=tina_token)
 
-        # Step 2 — Agent acknowledges before starting work
-        ack = await _sam_acknowledgment(task)
-        await _slack_post(channel, ack, token=agent_token)
+            # Step 2 — Agent acknowledges before starting work
+            ack = await _sam_acknowledgment(task)
+            await _slack_post(channel, ack, token=agent_token)
 
         start_task(agent_key, task)
         print(f"[{display}] background task started: {task[:80]}...")
         specialist = cls()
-        result     = await specialist.run(task, on_tool=tracking_on_tool, question_handler=question_handler, plan_handler=plan_handler)
+        result     = await specialist.run(task, on_tool=tracking_on_tool, on_tool_result=tracking_on_tool_result, question_handler=question_handler, plan_handler=plan_handler)
 
         print(f"[{display}] background task complete ({len(result)} chars)")
 
@@ -443,13 +585,20 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool):
             asyncio.create_task(_tts_stream(issue_summary))
             asyncio.create_task(_write_error_memory(agent_key, task, verify_msg))
 
+    except asyncio.CancelledError:
+        # Server is restarting — leave the task file so it gets re-dispatched on startup
+        print(f"[{display}] background task cancelled (server restart) — will resume on next start")
+        raise
     except Exception as e:
         print(f"[{display}] background task error: {e}")
-    finally:
-        end_task(agent_key)
         await _slack_post(channel, f"Hit an error: {e}", token=agent_token)
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Error: {e}"})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
+    finally:
+        end_task(agent_key)
+        # Only clear the task file on normal completion/error, not on cancellation
+        if task_id and not asyncio.current_task().cancelled():
+            _clear_pending_task(task_id)
 
 
 async def _direct_agent_chat(agent_key: str, text: str, channel: str):
@@ -609,23 +758,32 @@ async def _handle_message(text: str):
         if name == "delegate_to_agent":
             key  = (inputs or {}).get("agent", "")
             meta = _AGENT_META.get(key, {"display": key.capitalize(), "color": "#8B5CF6", "glow": "#A78BFA"})
-            # Background mode: agent runs independently — use agent_background_start not agent_active
             event_type = "agent_background_start" if agent.has_background_runner else "agent_active"
+            task_text = (inputs or {}).get("task", "")
             await broadcast({
                 "type":  event_type,
                 "agent": meta["display"],
                 "key":   key,
                 "color": meta["color"],
                 "glow":  meta["glow"],
+                "task":  task_text[:120] + "…" if len(task_text) > 120 else task_text,
             })
         else:
             await broadcast({"type": "tool", "name": name, "time": datetime.now().strftime("%H:%M:%S")})
 
+    async def on_tool_result(name: str, inputs: dict, result):
+        if name == "set_ui_pref":
+            await broadcast({"type": "ui_pref", "key": inputs.get("key"), "value": inputs.get("value")})
+            return
+        event = _make_tool_result_event(name, result)
+        if event:
+            await broadcast(event)
+
     async def on_agent_done(agent_key: str):
-        # Only called in blocking (non-background) mode
         await broadcast({"type": "agent_done"})
 
-    reply = await agent.chat(text, on_tool=on_tool, on_agent_done=on_agent_done, background=True)
+    reply = await agent.chat(text, on_tool=on_tool, on_tool_result=on_tool_result, on_agent_done=on_agent_done, background=True)
+    print(f"\n[TINA] {reply}\n")
     await broadcast({"type": "response", "text": reply})
     asyncio.create_task(_write_memory(text, reply, list(agent.history)))
     await _tts_stream(reply)
@@ -844,6 +1002,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     connections.append(ws)
     await ws.send_json({"type": "state", "state": "listening"})
+    await ws.send_json({"type": "prefs", "data": _load_prefs()})
     pending_mime = "audio/webm;codecs=opus"
     try:
         while True:

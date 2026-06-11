@@ -10,11 +10,13 @@ from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, 
 from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool
 from tina.agents.research import ResearchAgent
 from tina.agents.coding   import CodingAgent
+from tina.agents.email    import EmailAgent
 
 # ── Specialist agent registry ─────────────────────────────────────────────────
 _AGENTS: dict[str, type] = {
     "research": ResearchAgent,
     "coding":   CodingAgent,
+    "email":    EmailAgent,
 }
 
 # ── Direct tools (Tina handles herself without delegating) ────────────────────
@@ -139,7 +141,7 @@ class TinaAgent:
         await save_turn("tina", self.session_id, "user",      user_msg)
         await save_turn("tina", self.session_id, "assistant", assistant_reply)
 
-    async def chat(self, message: str, on_tool=None, on_agent_done=None, background: bool = True) -> str:
+    async def chat(self, message: str, on_tool=None, on_tool_result=None, on_agent_done=None, background: bool = True) -> str:
         await self._ensure_history_loaded()
         self.history.append({"role": "user", "content": message})
 
@@ -172,6 +174,8 @@ class TinaAgent:
                     if on_tool:
                         await on_tool(block.name, block.input)
                     result = await self._dispatch(block.name, block.input, on_tool, on_agent_done, background)
+                    if on_tool_result and block.name not in ("delegate_to_agent", "run_diagnostics", "get_agent_status", "search_conversation_history"):
+                        await on_tool_result(block.name, block.input, result)
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,

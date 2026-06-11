@@ -5,8 +5,12 @@ All writes are logged to stdout for audit visibility.
 
 import os
 import sys
+import queue
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import PROJECTS
+
+# Written files are pushed here; main.py drains this and broadcasts code_preview events
+_preview_queue: "queue.Queue[dict]" = queue.Queue()
 
 # Directories that are never useful to list or read — always skipped
 _SKIP_DIRS = {
@@ -137,6 +141,7 @@ def handle(name: str, inputs: dict) -> str:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             print(f"[fs_write] {path} ({len(content):,} chars)")
+            _preview_queue.put_nowait({"path": path, "content": content})
             return f"Written: {path} ({len(content):,} chars)"
         except Exception as e:
             return f"Error writing {path}: {e}"

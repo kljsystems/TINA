@@ -23,14 +23,18 @@ export function useTina() {
   const [alert,        setAlert]        = useState(null)
   const [lastResponse, setLastResponse] = useState(null)
   const [services,     setServices]     = useState(null)
-  const [diagRunning,  setDiagRunning]  = useState(false)
-  const [diagResults,  setDiagResults]  = useState({})
-  const [turnCount,    setTurnCount]    = useState(0)
-  const [sessionStart]                  = useState(Date.now())
+  const [diagRunning,       setDiagRunning]       = useState(false)
+  const [diagResults,       setDiagResults]       = useState({})
+  const [turnCount,         setTurnCount]         = useState(0)
+  const [sessionStart]                            = useState(Date.now())
+  const [codePreviewFiles,  setCodePreviewFiles]  = useState([])
+  const [panels,            setPanels]            = useState([])
+  const [activityLogVisible, setActivityLogVisible] = useState(true)
   const [agentStatuses, setAgentStatuses] = useState({
     tina:     { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
     research: { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9' },
     coding:   { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7', label: 'Sam' },
+    email:    { status: 'idle',    tool: null, color: '#f59e0b', glow: '#fcd34d', label: 'Tristan' },
   })
 
   const activeAgentKeyRef     = useRef(null)
@@ -48,6 +52,19 @@ export function useTina() {
     github_list_prs: 'GITHUB PRS', github_read_file: 'GITHUB FILE',
     delegate_to_agent: 'DELEGATING',
   }
+
+  // Auto-expire panels whose TTL has elapsed
+  useEffect(() => {
+    const t = setInterval(() => {
+      const now = Date.now()
+      setPanels(prev => prev.filter(p => p.ttl === Infinity || now - p.ts < p.ttl))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  const dismissPanel = useCallback((id) => {
+    setPanels(prev => prev.filter(p => p.id !== id))
+  }, [])
 
   // Poll service health every 30s
   useEffect(() => {
@@ -142,7 +159,6 @@ export function useTina() {
           break
         }
         case 'agent_background_start': {
-          // Agent launched in background — Tina stays free, agent runs independently
           const key = data.key || data.agent?.toLowerCase()
           activeAgentKeyRef.current     = key
           backgroundAgentKeyRef.current = key
@@ -150,10 +166,13 @@ export function useTina() {
             ...prev,
             [key]: prev[key] ? { ...prev[key], status: 'running', tool: 'RUNNING...' } : prev[key],
           }))
+          setPanels(prev => [
+            ...prev.filter(p => p.id !== `agent-${key}`),
+            { id: `agent-${key}`, name: key, type: 'agent', display: data.agent, color: data.color, glow: data.glow, text: 'Starting…', ttl: Infinity, ts: Date.now(), side: 'activity' },
+          ])
           break
         }
         case 'agent_background_done': {
-          // Background agent finished — show result, clear running state
           const key = data.agent?.toLowerCase()
           activeAgentKeyRef.current     = null
           backgroundAgentKeyRef.current = null
@@ -161,6 +180,7 @@ export function useTina() {
             ...prev,
             [key]: prev[key] ? { ...prev[key], status: 'idle', tool: null } : prev[key],
           }))
+          setPanels(prev => prev.filter(p => p.id !== `agent-${key}`))
           if (data.summary) setLastResponse(`${data.display} finished:\n\n${data.summary}`)
           break
         }
@@ -207,9 +227,26 @@ export function useTina() {
               ? { ...prev, [key]: { ...prev[key], tool: label } }
               : prev
             )
+            setPanels(prev => prev.map(p =>
+              p.id === `agent-${key}` ? { ...p, text: label } : p
+            ))
           } else {
             setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, tool: label } }))
           }
+          break
+        }
+        case 'code_preview':
+          setCodePreviewFiles(prev => [
+            { path: data.path, content: data.content, ts: Date.now() },
+            ...prev.filter(f => f.path !== data.path),
+          ].slice(0, 20))
+          break
+        case 'tool_result': {
+          const pid = `${data.name}-panel`
+          setPanels(prev => [
+            { id: pid, name: data.name, type: data.panel_type, text: data.text, ttl: data.ttl, ts: Date.now(), side: 'info' },
+            ...prev.filter(p => p.id !== pid),
+          ])
           break
         }
         case 'diag_start':
@@ -221,6 +258,13 @@ export function useTina() {
           break
         case 'diag_complete':
           setDiagRunning(false)
+          break
+        case 'prefs':
+          if (data.data?.activity_log !== undefined)
+            setActivityLogVisible(data.data.activity_log)
+          break
+        case 'ui_pref':
+          if (data.key === 'activity_log') setActivityLogVisible(data.value)
           break
         case 'system':
           if (data.voice)              setVoice(data.voice)
@@ -307,7 +351,8 @@ export function useTina() {
     connected, tinaState, isRecording, activeAgent, conversation,
     stats, voice, user, lastTool, alert, lastResponse,
     services, turnCount, sessionStart, agentStatuses,
-    diagRunning, diagResults,
+    diagRunning, diagResults, codePreviewFiles,
+    panels, dismissPanel, activityLogVisible,
     sendMessage, startRecording, stopRecording,
   }
 }

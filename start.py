@@ -9,6 +9,10 @@ import time
 import threading
 import urllib.request
 
+# Force UTF-8 so Tina's responses (with emojis etc.) print correctly on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 ROOT         = os.path.dirname(os.path.abspath(__file__))
 RESTART_FLAG = os.path.join(ROOT, "data", "restart.flag")
 LOG_FILE     = os.path.join(ROOT, "data", "backend.log")
@@ -126,7 +130,7 @@ def _start_backend() -> subprocess.Popen:
     with open(LOG_FILE, "a", encoding="utf-8") as lf:
         lf.write(f"\n=== Backend started: {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
     _backend = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "backend.main:app", "--port", "8000", "--reload"],
+        [sys.executable, "-m", "uvicorn", "backend.main:app", "--port", "8000"],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

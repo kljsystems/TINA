@@ -59,6 +59,22 @@ DEFINITIONS = [
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "set_ui_pref",
+        "description": (
+            "Show or hide a dashboard UI element. Persisted to disk so the setting survives restarts. "
+            "Use this when Ky asks to turn on or off a dashboard panel — e.g. 'hide the activity log', "
+            "'turn off the log', 'show the activity log again'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key":   {"type": "string",  "enum": ["activity_log"], "description": "Which element to configure."},
+                "value": {"type": "boolean", "description": "true = visible, false = hidden."},
+            },
+            "required": ["key", "value"],
+        },
+    },
 ]
 
 
@@ -101,5 +117,24 @@ def handle(name: str, inputs: dict) -> str:
         if os.path.exists(RESTART_FLAG):
             return "Restart is still in progress — the flag file hasn't been consumed yet."
         return "No pending restart flag. Backend should be running normally."
+
+    if name == "set_ui_pref":
+        import json as _json
+        from config import PREFS_FILE
+        key   = inputs.get("key", "")
+        value = inputs.get("value", True)
+        prefs = {}
+        if os.path.exists(PREFS_FILE):
+            try:
+                with open(PREFS_FILE) as f:
+                    prefs = _json.load(f)
+            except Exception:
+                pass
+        prefs[key] = value
+        os.makedirs(os.path.dirname(PREFS_FILE), exist_ok=True)
+        with open(PREFS_FILE, "w") as f:
+            _json.dump(prefs, f, indent=2)
+        state = "visible" if value else "hidden"
+        return f"Dashboard {key.replace('_', ' ')} is now {state}."
 
     return f"Unknown tool: {name}"

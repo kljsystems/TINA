@@ -5,3 +5,5 @@ python-dotenv
 supabase
 python-docx
 reportlab
+rich
+websockets

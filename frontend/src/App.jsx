@@ -2,293 +2,179 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTina } from './hooks/useTina'
 import TinaFace, { STATE_CFG } from './components/TinaFace'
 
-// ── Palette ──────────────────────────────────────────────────────────────────
+// ── Palette ───────────────────────────────────────────────────────────────────
 const P  = '#8B5CF6'
 const PG = '#C4B5FD'
 const PD = '#4C1D95'
 const PF = '#1E1030'
 const PB = '#08040F'
 
-// ── HUD sub-components (from v2) ─────────────────────────────────────────────
+// ── Panel config ──────────────────────────────────────────────────────────────
+const PANEL_CFG = {
+  weather:  { color: '#4ade80', glow: '#86efac', label: 'WEATHER'  },
+  search:   { color: '#06b6d4', glow: '#67e8f9', label: 'SEARCH'   },
+  news:     { color: '#f59e0b', glow: '#fcd34d', label: 'NEWS'     },
+  vault:    { color: '#a78bfa', glow: '#c4b5fd', label: 'VAULT'    },
+  calendar: { color: '#60a5fa', glow: '#93c5fd', label: 'CALENDAR' },
+  github:   { color: '#94a3b8', glow: '#cbd5e1', label: 'GITHUB'   },
+  logs:     { color: '#f59e0b', glow: '#fcd34d', label: 'LOGS'     },
+  system:   { color: '#f59e0b', glow: '#fcd34d', label: 'SYSTEM'   },
+  agent:    { color: '#10b981', glow: '#6ee7b7', label: 'AGENT'    },
+  default:  { color: P,         glow: PG,        label: 'TOOL'     },
+}
 
-function HUDShell({ title, persistent, ephemeral, onExpire, children }) {
-  const [opacity, setOpacity] = useState(0)
+// ── ContextPanel ──────────────────────────────────────────────────────────────
+
+function ContextPanel({ panel, onDismiss }) {
+  const [visible, setVisible] = useState(false)
   const [dying,   setDying]   = useState(false)
+  const cfg = PANEL_CFG[panel.type] ?? PANEL_CFG.default
+
   useEffect(() => {
-    setTimeout(() => setOpacity(1), 30)
-    if (ephemeral) {
-      const t1 = setTimeout(() => setDying(true),    ephemeral - 800)
-      const t2 = setTimeout(() => onExpire?.(),       ephemeral)
+    setTimeout(() => setVisible(true), 20)
+    if (panel.ttl !== Infinity) {
+      const fadeAt  = panel.ts + panel.ttl - 1200
+      const killAt  = panel.ts + panel.ttl
+      const nowMs   = Date.now()
+      const fadeIn  = Math.max(0, fadeAt - nowMs)
+      const killIn  = Math.max(0, killAt - nowMs)
+      const t1 = setTimeout(() => setDying(true),    fadeIn)
+      const t2 = setTimeout(() => onDismiss(panel.id), killIn)
       return () => { clearTimeout(t1); clearTimeout(t2) }
     }
   }, [])
-  return (
-    <div style={{
-      transition: 'opacity 0.6s', opacity: dying ? 0 : opacity,
-      border: `1px solid ${persistent ? P + '66' : P + '33'}`,
-      background: `${PF}cc`, padding: '14px 16px', borderRadius: 4,
-      fontFamily: "'Courier New', monospace", color: PG,
-      boxShadow: persistent ? `0 0 20px ${P}22` : 'none',
-    }}>
-      <div style={{ fontSize: 10, letterSpacing: 3, opacity: 0.5, marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
-        <span>{title}</span>
-        {persistent && <span style={{ color: P, opacity: 0.8 }}>◆ PINNED</span>}
-        {ephemeral  && <span style={{ opacity: 0.4 }}>◌ TEMP</span>}
-      </div>
-      {children}
-    </div>
-  )
-}
 
-function MiniBar({ label, value }) {
-  return (
-    <div style={{ marginBottom: 7 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-        <span style={{ fontSize: 10, letterSpacing: 2, opacity: 0.6 }}>{label}</span>
-        <span style={{ fontSize: 10 }}>{value}%</span>
-      </div>
-      <div style={{ height: 3, background: '#ffffff11', borderRadius: 2 }}>
-        <div style={{ height: '100%', width: `${value}%`, background: `linear-gradient(90deg,${PD},${PG})`, borderRadius: 2, boxShadow: `0 0 5px ${PG}` }} />
-      </div>
-    </div>
-  )
-}
-
-function AgentGrid({ agents }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-      {agents.map(a => (
-        <div key={a.name} style={{ padding: '6px 8px', border: `1px solid ${a.active ? P + '55' : '#ffffff11'}`, borderRadius: 3, textAlign: 'center' }}>
-          <div style={{ fontSize: 9, letterSpacing: 1, opacity: a.active ? 1 : 0.3 }}>{a.name}</div>
-          <div style={{ fontSize: 8, marginTop: 3, color: a.active ? '#4ade80' : '#ffffff33' }}>{a.active ? '● ACTIVE' : '○ IDLE'}</div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function ThoughtTicker({ thoughts }) {
-  const [idx, setIdx] = useState(0)
-  useEffect(() => {
-    const t = setInterval(() => setIdx(i => (i + 1) % thoughts.length), 2800)
-    return () => clearInterval(t)
-  }, [thoughts.length])
-  return <div style={{ fontSize: 10, lineHeight: 1.6, opacity: 0.8, minHeight: 34, letterSpacing: 0.5 }}>{thoughts[idx]}</div>
-}
-
-function MemoryNodes({ nodes }) {
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-      {nodes.map(n => (
-        <div key={n} style={{ fontSize: 9, letterSpacing: 1, padding: '3px 8px', border: `1px solid ${P}44`, borderRadius: 10, opacity: 0.7 }}>{n}</div>
-      ))}
-    </div>
-  )
-}
-
-function DataFlow({ label, bps }) {
-  const [bars, setBars] = useState(Array(12).fill(0.2))
-  useEffect(() => {
-    const t = setInterval(() => setBars(b => [...b.slice(1), 0.15 + Math.random() * 0.85]), 200)
-    return () => clearInterval(t)
-  }, [])
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 34, marginBottom: 6 }}>
-        {bars.map((h, i) => <div key={i} style={{ flex: 1, height: `${h * 100}%`, background: PG, opacity: 0.4 + h * 0.6, borderRadius: 1 }} />)}
-      </div>
-      <div style={{ fontSize: 10, opacity: 0.5, letterSpacing: 1 }}>{label} · {bps}</div>
-    </div>
-  )
-}
-
-function ConfidenceMeter({ value, label }) {
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <svg width={90} height={52} viewBox="0 0 90 52">
-        <path d="M 10 46 A 35 35 0 0 1 80 46" fill="none" stroke={PF} strokeWidth={5} />
-        <path d="M 10 46 A 35 35 0 0 1 80 46" fill="none" stroke={PG} strokeWidth={5}
-          strokeDasharray={`${(value / 100) * 110} 110`} strokeLinecap="round"
-          style={{ filter: `drop-shadow(0 0 4px ${P})` }} />
-        <text x="45" y="44" textAnchor="middle" fill={PG} fontSize="13" fontFamily="Courier New">{value}%</text>
-      </svg>
-      <div style={{ fontSize: 9, letterSpacing: 2, opacity: 0.5 }}>{label}</div>
-    </div>
-  )
-}
-
-function AlertBanner({ message, level }) {
-  const colors = { warn: '#f59e0b', error: '#ef4444', info: PG }
-  const c = colors[level] ?? PG
-  return <div style={{ fontSize: 10, letterSpacing: 1, color: c, padding: '5px 0', borderLeft: `2px solid ${c}`, paddingLeft: 10 }}>{message}</div>
-}
-
-function DynamicElement({ spec, onExpire }) {
-  let content = null
-  switch (spec.type) {
-    case 'agent_grid':    content = <AgentGrid agents={spec.agents} />; break
-    case 'thought':       content = <ThoughtTicker thoughts={spec.thoughts} />; break
-    case 'memory_nodes':  content = <MemoryNodes nodes={spec.nodes} />; break
-    case 'data_flow':     content = <DataFlow label={spec.label} bps={spec.bps} />; break
-    case 'confidence':    content = <ConfidenceMeter value={spec.value} label={spec.label} />; break
-    case 'bars':          content = spec.bars?.map(b => <MiniBar key={b.label} label={b.label} value={b.value} />); break
-    case 'alert':         content = <AlertBanner message={spec.message} level={spec.level} />; break
-    default:              content = <div style={{ fontSize: 8, opacity: 0.5 }}>unknown: {spec.type}</div>
-  }
-  return (
-    <HUDShell title={spec.title} persistent={spec.persistent} ephemeral={spec.ephemeral} onExpire={onExpire}>
-      {content}
-    </HUDShell>
-  )
-}
-
-// ── Permanent HUD panels ─────────────────────────────────────────────────────
-
-function ConnectionStatus({ connected, services }) {
-  const rows = [
-    { name: 'WEBSOCKET',  ok: connected },
-    { name: 'DEEPGRAM',   ok: services?.deepgram },
-    { name: 'ELEVENLABS', ok: services?.elevenlabs },
-    { name: 'GITHUB',     ok: services?.github },
-    { name: 'TAVILY',     ok: services?.tavily },
-    { name: 'WEATHER',    ok: services?.weather },
-  ]
-  return (
-    <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
-      <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>CONNECTION STATUS</div>
-      {rows.map(({ name, ok }) => (
-        <div key={name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-          <span style={{ fontSize: 10, letterSpacing: 1, opacity: 0.7 }}>{name}</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9, letterSpacing: 1 }}>
+  // Agent panel layout
+  if (panel.type === 'agent') {
+    return (
+      <div style={{
+        opacity: dying ? 0 : visible ? 1 : 0,
+        transition: 'opacity 0.5s',
+        border: `1px solid ${cfg.color}55`,
+        borderLeft: `3px solid ${cfg.color}`,
+        background: `${PF}dd`,
+        borderRadius: 4,
+        padding: '12px 14px',
+        boxShadow: `0 0 18px ${cfg.glow}18`,
+        flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               width: 6, height: 6, borderRadius: '50%', display: 'inline-block',
-              background: ok === undefined ? '#6b7280' : ok ? '#4ade80' : '#ef4444',
-              boxShadow: ok === undefined ? 'none' : ok ? '0 0 6px #4ade80' : '0 0 6px #ef4444',
+              background: cfg.color, boxShadow: `0 0 8px ${cfg.glow}`,
+              animation: 'agentpulse 1s ease-in-out infinite',
             }} />
-            <span style={{ opacity: 0.5 }}>{ok === undefined ? 'UNKNOWN' : ok ? 'ONLINE' : 'OFFLINE'}</span>
-          </span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function AgentStatus({ agentStatuses, tinaState }) {
-  const agents = [
-    { key: 'tina',     label: 'TINA CORE' },
-    { key: 'research', label: 'RESEARCH'  },
-    { key: 'coding',   label: 'SAM'       },
-  ]
-  const tinaStatusMap = { listening: 'READY', thinking: 'PROCESSING', speaking: 'RESPONDING', standby: 'STANDBY', offline: 'OFFLINE' }
-
-  return (
-    <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
-      <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>AGENT STATUS</div>
-      {agents.map(({ key, label }) => {
-        const ag         = agentStatuses[key]
-        const isCore     = key === 'tina'
-        const isRunning  = ag.status === 'running'  // background task in progress
-        const active     = isCore ? tinaState !== 'offline' && tinaState !== 'standby' : ag.status === 'active' || isRunning
-        const status     = isCore ? (tinaStatusMap[tinaState] ?? tinaState.toUpperCase()) : ag.status.toUpperCase()
-        const tool       = ag.tool
-
-        return (
-          <div key={key} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: `1px solid ${P}11` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: tool ? 4 : 0 }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{
-                  width: 5, height: 5, borderRadius: '50%', display: 'inline-block',
-                  background: isRunning ? ag.glow : ag.color,
-                  boxShadow: active ? `0 0 8px ${ag.glow}` : 'none',
-                  opacity: active ? 1 : 0.3,
-                  // background agents get a faster pulse to distinguish from blocking active
-                  animation: active ? (isRunning ? 'agentpulse 0.9s ease-in-out infinite' : 'agentpulse 2s ease-in-out infinite') : 'none',
-                }} />
-                <span style={{ fontSize: 10, letterSpacing: 1, color: active ? ag.color : PG, opacity: active ? 1 : 0.4 }}>
-                  {label}
-                </span>
-              </span>
-              <span style={{ fontSize: 9, letterSpacing: 1, opacity: 0.45, color: isRunning ? ag.glow : undefined }}>{status}</span>
-            </div>
-            {tool && (
-              <div style={{
-                fontSize: 9, letterSpacing: 1, color: ag.color, opacity: 0.8,
-                paddingLeft: 11, animation: 'fadein 0.2s ease',
-              }}>
-                ↳ {tool}
-              </div>
-            )}
+            <span style={{ fontSize: 9, letterSpacing: 3, color: cfg.color }}>{(panel.display || panel.name).toUpperCase()}</span>
           </div>
-        )
-      })}
-    </div>
-  )
-}
+          <span style={{ fontSize: 8, letterSpacing: 1, opacity: 0.4, color: cfg.color }}>RUNNING</span>
+        </div>
+        <div style={{ fontSize: 10, letterSpacing: 1, color: cfg.color, opacity: 0.75, paddingLeft: 14 }}>
+          ↳ {panel.text}
+        </div>
+      </div>
+    )
+  }
 
-function SessionStats({ turnCount, sessionStart }) {
-  const [uptime, setUptime] = useState('00:00:00')
-  useEffect(() => {
-    const t = setInterval(() => {
-      const ms = Date.now() - sessionStart
-      const h  = Math.floor(ms / 3600000)
-      const m  = Math.floor((ms % 3600000) / 60000)
-      const s  = Math.floor((ms % 60000) / 1000)
-      setUptime(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`)
-    }, 1000)
-    return () => clearInterval(t)
-  }, [sessionStart])
-
+  // Info panel layout
   return (
-    <div style={{ border: `1px solid ${P}55`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc`, flexShrink: 0 }}>
-      <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>SESSION</div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-        <span style={{ fontSize: 10, letterSpacing: 1, opacity: 0.6 }}>UPTIME</span>
-        <span style={{ fontSize: 10, letterSpacing: 1, color: PG }}>{uptime}</span>
+    <div style={{
+      opacity: dying ? 0 : visible ? 1 : 0,
+      transition: 'opacity 0.5s',
+      border: `1px solid ${cfg.color}33`,
+      borderLeft: `3px solid ${cfg.color}88`,
+      background: `${PF}cc`,
+      borderRadius: 4,
+      padding: '11px 14px',
+      boxShadow: `0 0 12px ${cfg.glow}11`,
+      flexShrink: 0,
+      maxHeight: 200,
+      overflow: 'hidden',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{ fontSize: 9, letterSpacing: 3, color: cfg.color, opacity: 0.85 }}>{cfg.label}</span>
+        <button
+          onClick={() => onDismiss(panel.id)}
+          style={{ background: 'none', border: 'none', color: cfg.color, opacity: 0.35, cursor: 'pointer', fontSize: 10, padding: 0 }}
+        >✕</button>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 10, letterSpacing: 1, opacity: 0.6 }}>EXCHANGES</span>
-        <span style={{ fontSize: 10, letterSpacing: 1, color: PG }}>{turnCount}</span>
+      <div style={{
+        fontSize: 10, lineHeight: 1.65, letterSpacing: 0.3, color: PG, opacity: 0.85,
+        whiteSpace: 'pre-wrap', overflow: 'hidden',
+        display: '-webkit-box', WebkitLineClamp: 8, WebkitBoxOrient: 'vertical',
+      }}>
+        {panel.text}
       </div>
     </div>
   )
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Code files badge ──────────────────────────────────────────────────────────
 
-let _eid = 0
-const ts = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+function CodeFilesBadge({ files, onClick }) {
+  if (!files.length) return null
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        border: `1px solid #10b98155`,
+        borderLeft: `3px solid #10b981`,
+        background: `${PF}cc`,
+        borderRadius: 4,
+        padding: '10px 14px',
+        cursor: 'pointer',
+        flexShrink: 0,
+        transition: 'box-shadow 0.2s',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: '50%', background: '#10b981',
+            display: 'inline-block', animation: 'agentpulse 1.5s ease-in-out infinite',
+          }} />
+          <span style={{ fontSize: 9, letterSpacing: 3, color: '#10b981' }}>CODE FILES</span>
+        </div>
+        <span style={{
+          fontSize: 9, background: '#10b98133', border: '1px solid #10b98155',
+          color: '#10b981', borderRadius: 10, padding: '1px 7px', letterSpacing: 1,
+        }}>{files.length}</span>
+      </div>
+      <div style={{ marginTop: 7, paddingLeft: 14 }}>
+        {files.slice(0, 3).map(f => (
+          <div key={f.ts} style={{ fontSize: 9, letterSpacing: 0.5, color: '#10b981', opacity: 0.6, marginBottom: 2 }}>
+            {f.path.replace(/\\/g, '/').split('/').pop()}
+          </div>
+        ))}
+        {files.length > 3 && (
+          <div style={{ fontSize: 9, letterSpacing: 1, opacity: 0.35, color: '#10b981' }}>+{files.length - 3} more</div>
+        )}
+      </div>
+    </div>
+  )
+}
 
-// ── App ───────────────────────────────────────────────────────────────────────
+// ── Diagnostics overlay (unchanged) ──────────────────────────────────────────
 
 function DiagOverlay({ results, running, onClose }) {
-  const checks = Object.entries(results)
-  const total  = checks.length
-  const done   = checks.filter(([, r]) => r.status !== 'running').length
-  const passed = checks.filter(([, r]) => r.status === 'pass').length
-  const failed = checks.filter(([, r]) => r.status === 'fail').length
-  const warned = checks.filter(([, r]) => r.status === 'warn').length
+  const checks  = Object.entries(results)
+  const total   = checks.length
+  const done    = checks.filter(([, r]) => r.status !== 'running').length
+  const passed  = checks.filter(([, r]) => r.status === 'pass').length
+  const failed  = checks.filter(([, r]) => r.status === 'fail').length
+  const warned  = checks.filter(([, r]) => r.status === 'warn').length
 
-  const dot = status => {
-    if (status === 'running') return { bg: '#6b7280', anim: 'agentpulse 0.8s ease-in-out infinite' }
-    if (status === 'pass')    return { bg: '#4ade80', anim: 'none' }
-    if (status === 'fail')    return { bg: '#ef4444', anim: 'none' }
-    if (status === 'warn')    return { bg: '#f59e0b', anim: 'none' }
+  const dot = s => {
+    if (s === 'running') return { bg: '#6b7280', anim: 'agentpulse 0.8s ease-in-out infinite' }
+    if (s === 'pass')    return { bg: '#4ade80', anim: 'none' }
+    if (s === 'fail')    return { bg: '#ef4444', anim: 'none' }
+    if (s === 'warn')    return { bg: '#f59e0b', anim: 'none' }
     return { bg: '#ffffff22', anim: 'none' }
   }
 
   return (
-    <div style={{
-      position: 'absolute', inset: 0, zIndex: 30,
-      background: 'rgba(8,4,15,0.92)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-    }}>
-      <div style={{
-        width: 560, maxHeight: '80vh', display: 'flex', flexDirection: 'column',
-        border: `1px solid ${P}66`, borderRadius: 6,
-        background: `${PF}ee`, boxShadow: `0 0 40px ${P}33`,
-        fontFamily: "'Courier New', monospace",
-      }}>
-        {/* Header */}
+    <div style={{ position: 'absolute', inset: 0, zIndex: 30, background: 'rgba(8,4,15,0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ width: 560, maxHeight: '80vh', display: 'flex', flexDirection: 'column', border: `1px solid ${P}66`, borderRadius: 6, background: `${PF}ee`, boxShadow: `0 0 40px ${P}33`, fontFamily: "'Courier New', monospace" }}>
         <div style={{ padding: '14px 20px', borderBottom: `1px solid ${P}33`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <div style={{ fontSize: 11, letterSpacing: 4, color: PG }}>SYSTEM DIAGNOSTICS</div>
@@ -300,53 +186,22 @@ function DiagOverlay({ results, running, onClose }) {
             {running ? 'HIDE' : 'CLOSE'}
           </button>
         </div>
-
-        {/* Progress bar */}
         <div style={{ height: 2, background: '#ffffff11' }}>
-          <div style={{
-            height: '100%',
-            width: total ? `${(done / total) * 100}%` : '0%',
-            background: failed > 0 ? '#ef4444' : warned > 0 ? '#f59e0b' : `linear-gradient(90deg,${PD},${PG})`,
-            transition: 'width 0.3s ease',
-            boxShadow: `0 0 6px ${PG}`,
-          }} />
+          <div style={{ height: '100%', width: total ? `${(done / total) * 100}%` : '0%', background: failed > 0 ? '#ef4444' : warned > 0 ? '#f59e0b' : `linear-gradient(90deg,${PD},${PG})`, transition: 'width 0.3s ease', boxShadow: `0 0 6px ${PG}` }} />
         </div>
-
-        {/* Check list */}
         <div style={{ overflowY: 'auto', padding: '10px 0' }}>
           {checks.map(([id, result]) => {
             const d = dot(result.status)
             return (
-              <div key={id} style={{
-                display: 'flex', alignItems: 'flex-start', gap: 12,
-                padding: '7px 20px',
-                borderBottom: `1px solid ${P}11`,
-                animation: result.status !== 'running' ? 'fadein 0.2s ease' : 'none',
-              }}>
-                <span style={{
-                  flexShrink: 0, marginTop: 2,
-                  width: 7, height: 7, borderRadius: '50%',
-                  background: d.bg, display: 'inline-block',
-                  boxShadow: result.status !== 'running' ? `0 0 6px ${d.bg}` : 'none',
-                  animation: d.anim,
-                }} />
+              <div key={id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '7px 20px', borderBottom: `1px solid ${P}11` }}>
+                <span style={{ flexShrink: 0, marginTop: 2, width: 7, height: 7, borderRadius: '50%', background: d.bg, display: 'inline-block', boxShadow: result.status !== 'running' ? `0 0 6px ${d.bg}` : 'none', animation: d.anim }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 10, letterSpacing: 2, opacity: result.status === 'running' ? 0.5 : 0.9 }}>
-                      {result.label || id.toUpperCase()}
-                    </span>
-                    <span style={{
-                      fontSize: 9, letterSpacing: 1,
-                      color: d.bg,
-                      opacity: result.status === 'running' ? 0.4 : 0.9,
-                    }}>
-                      {result.status === 'running' ? '...' : result.status.toUpperCase()}
-                    </span>
+                    <span style={{ fontSize: 10, letterSpacing: 2, opacity: result.status === 'running' ? 0.5 : 0.9 }}>{result.label || id.toUpperCase()}</span>
+                    <span style={{ fontSize: 9, letterSpacing: 1, color: d.bg, opacity: result.status === 'running' ? 0.4 : 0.9 }}>{result.status === 'running' ? '...' : result.status.toUpperCase()}</span>
                   </div>
                   {result.detail && result.status !== 'running' && (
-                    <div style={{ fontSize: 9, letterSpacing: 0.5, opacity: 0.45, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {result.detail}
-                    </div>
+                    <div style={{ fontSize: 9, letterSpacing: 0.5, opacity: 0.45, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.detail}</div>
                   )}
                 </div>
               </div>
@@ -358,107 +213,159 @@ function DiagOverlay({ results, running, onClose }) {
   )
 }
 
+// ── Code preview panel (overlay) ──────────────────────────────────────────────
+
+function CodePreviewPanel({ files, onClose }) {
+  const [selectedIdx, setSelectedIdx] = useState(0)
+  useEffect(() => { setSelectedIdx(0) }, [files.length])
+  if (!files.length) return null
+
+  const current  = files[selectedIdx]
+  const basename = p => p.replace(/\\/g, '/').split('/').pop()
+  const ext      = p => { const b = basename(p); const i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1) : '' }
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, zIndex: 25, background: 'rgba(8,4,15,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', animation: 'fadein 0.25s ease' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ width: '85vw', height: '78vh', display: 'flex', flexDirection: 'column', border: `1px solid ${P}66`, borderRadius: 6, background: `${PF}f0`, boxShadow: `0 0 50px ${P}33`, fontFamily: "'Courier New', monospace", overflow: 'hidden' }}>
+        <div style={{ flexShrink: 0, padding: '10px 16px', borderBottom: `1px solid ${P}33`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 10, letterSpacing: 4, color: PG, opacity: 0.7 }}>CODE PREVIEW</span>
+            <span style={{ fontSize: 9, letterSpacing: 2, padding: '2px 8px', border: `1px solid ${P}44`, borderRadius: 10, color: P }}>{files.length} file{files.length !== 1 ? 's' : ''}</span>
+            <span style={{ fontSize: 9, letterSpacing: 1, color: '#10b981', opacity: 0.8, display: 'flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#10b981', display: 'inline-block', animation: 'agentpulse 1.2s ease-in-out infinite' }} />
+              SAM WRITING
+            </span>
+          </div>
+          <button onClick={onClose} style={{ ...btnStyle(true, false), padding: '3px 12px', fontSize: 9 }}>✕ CLOSE</button>
+        </div>
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          <div style={{ width: 200, flexShrink: 0, borderRight: `1px solid ${P}22`, overflowY: 'auto', padding: '8px 0' }}>
+            {files.map((f, i) => (
+              <div key={f.ts} onClick={() => setSelectedIdx(i)} style={{ padding: '7px 14px', cursor: 'pointer', background: i === selectedIdx ? `${P}22` : 'transparent', borderLeft: `2px solid ${i === selectedIdx ? P : 'transparent'}`, transition: 'all 0.15s' }}>
+                <div style={{ fontSize: 10, letterSpacing: 0.5, color: i === selectedIdx ? PG : PG + '88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{basename(f.path)}</div>
+                <div style={{ fontSize: 8, letterSpacing: 1, opacity: 0.35, marginTop: 2 }}>.{ext(f.path) || '?'}  ·  {(f.content.length / 1024).toFixed(1)}k</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ flexShrink: 0, padding: '6px 14px', borderBottom: `1px solid ${P}22`, fontSize: 9, letterSpacing: 1, opacity: 0.45, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {current.path.replace(/\\/g, '/')}
+            </div>
+            <pre style={{ flex: 1, margin: 0, padding: '12px 16px', overflowY: 'auto', overflowX: 'auto', fontSize: 11, lineHeight: 1.6, letterSpacing: 0.3, color: PG, opacity: 0.9, whiteSpace: 'pre', tabSize: 2, animation: 'fadein 0.2s ease' }}>
+              {current.content}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const ts = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+function btnStyle(active, dim = false) {
+  return {
+    padding: '7px 16px', fontSize: 10, letterSpacing: 2,
+    background: active ? `${P}33` : 'transparent',
+    border: `1px solid ${active ? P : P + '33'}`,
+    color: active ? PG : dim ? PG + '44' : PG + '66',
+    borderRadius: 3, cursor: active ? 'pointer' : 'not-allowed',
+    textTransform: 'uppercase', transition: 'all 0.2s',
+    fontFamily: "'Courier New',monospace",
+  }
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const { connected, tinaState, isRecording, activeAgent, conversation, lastResponse, services, turnCount, sessionStart, agentStatuses, diagRunning, diagResults, sendMessage, startRecording, stopRecording } = useTina()
+  const {
+    connected, tinaState, isRecording, activeAgent,
+    lastResponse, services, turnCount, sessionStart,
+    agentStatuses, diagRunning, diagResults,
+    codePreviewFiles, panels, dismissPanel, activityLogVisible,
+    sendMessage, startRecording, stopRecording,
+  } = useTina()
 
-  const [elements,       setElements]       = useState([])
-  const [loading,        setLoading]        = useState(false)
-  const [log,            setLog]            = useState(['System initialised', 'Neural core loading...'])
-  const [input,          setInput]          = useState('')
-  const [time,           setTime]           = useState(new Date())
-  const [showResponse,   setShowResponse]   = useState(false)
-  const [showDiag,       setShowDiag]       = useState(false)
-  const inputRef        = useRef(null)
-  const convoLen        = useRef(0)
-  const prevConn        = useRef(false)
-  const responseDismiss = useRef(null)
-  const diagDismiss     = useRef(null)
+  const [input,           setInput]          = useState('')
+  const [time,            setTime]           = useState(new Date())
+  const [log,             setLog]            = useState(['System initialised', 'Neural core loading…'])
+  const [showDiag,        setShowDiag]       = useState(false)
+  const [showCodePreview, setShowCodePreview] = useState(false)
+  const [uptime,          setUptime]         = useState('00:00:00')
 
-  // Show response box as soon as text arrives — no timer yet
+  const inputRef    = useRef(null)
+  const diagDismiss = useRef(null)
+  const prevConn    = useRef(false)
+
+  const addLog = useCallback(msg => {
+    setLog(l => [`${ts()} ${msg}`, ...l].slice(0, 12))
+  }, [])
+
+  // Clock + uptime
   useEffect(() => {
-    if (lastResponse) {
-      setShowResponse(true)
-      if (responseDismiss.current) clearTimeout(responseDismiss.current)
-    } else {
-      setShowResponse(false)
-      if (responseDismiss.current) clearTimeout(responseDismiss.current)
-    }
-  }, [lastResponse])
+    const t = setInterval(() => {
+      setTime(new Date())
+      const ms = Date.now() - sessionStart
+      const h  = Math.floor(ms / 3600000)
+      const m  = Math.floor((ms % 3600000) / 60000)
+      const s  = Math.floor((ms % 60000) / 1000)
+      setUptime(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`)
+    }, 1000)
+    return () => clearInterval(t)
+  }, [sessionStart])
 
-  // Start 10s dismiss countdowns only after Tina finishes speaking
+  // Connection log
   useEffect(() => {
-    if (tinaState === 'listening') {
-      if (lastResponse) {
-        if (responseDismiss.current) clearTimeout(responseDismiss.current)
-        responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
-      }
-      if (showDiag && !diagRunning) {
-        if (diagDismiss.current) clearTimeout(diagDismiss.current)
-        diagDismiss.current = setTimeout(() => setShowDiag(false), 10000)
-      }
-    }
-  }, [tinaState])
+    if ( connected && !prevConn.current) addLog('Neural link established')
+    if (!connected &&  prevConn.current) addLog('Connection lost — reconnecting…')
+    prevConn.current = connected
+  }, [connected, addLog])
 
-  // Auto-show diag overlay when running; cancel any pending close timer
+  // Log new Tina responses
+  const prevResponse = useRef(null)
+  useEffect(() => {
+    if (lastResponse && lastResponse !== prevResponse.current) {
+      addLog(`TINA: ${lastResponse.slice(0, 60)}${lastResponse.length > 60 ? '…' : ''}`)
+      prevResponse.current = lastResponse
+    }
+  }, [lastResponse, addLog])
+
+  // Log tool panels arriving
+  useEffect(() => {
+    const latest = panels.filter(p => p.type !== 'agent').at(-1)
+    if (latest) addLog(`${latest.type.toUpperCase()}: ${latest.text.slice(0, 50)}…`)
+  }, [panels.length])
+
+  // Auto-show code preview when Sam writes
+  useEffect(() => {
+    if (codePreviewFiles.length > 0) {
+      setShowCodePreview(true)
+      addLog(`SAM wrote: ${codePreviewFiles[0].path.replace(/\\/g, '/').split('/').pop()}`)
+    }
+  }, [codePreviewFiles.length, addLog])
+
+  // Diag overlay
   useEffect(() => {
     if (diagRunning) {
       setShowDiag(true)
       if (diagDismiss.current) clearTimeout(diagDismiss.current)
     }
   }, [diagRunning])
-
-  // Clock
   useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000)
-    return () => clearInterval(t)
-  }, [])
-
-  const addLog = useCallback(msg => {
-    setLog(l => [`${ts()} ${msg}`, ...l].slice(0, 8))
-  }, [])
-
-  // Log new conversation turns
-  useEffect(() => {
-    if (conversation.length > convoLen.current) {
-      const latest = conversation[conversation.length - 1]
-      const who    = latest.role === 'tina' ? 'TINA' : 'KAI'
-      const text   = latest.text.length > 52 ? latest.text.slice(0, 52) + '…' : latest.text
-      addLog(`${who}: ${text}`)
+    if (tinaState === 'listening' && showDiag && !diagRunning) {
+      if (diagDismiss.current) clearTimeout(diagDismiss.current)
+      diagDismiss.current = setTimeout(() => setShowDiag(false), 10000)
     }
-    convoLen.current = conversation.length
-  }, [conversation, addLog])
-
-  // Log connection changes
-  useEffect(() => {
-    if (connected  && !prevConn.current) addLog('Neural link established')
-    if (!connected &&  prevConn.current) addLog('Connection lost — reconnecting...')
-    prevConn.current = connected
-  }, [connected, addLog])
-
-  // SPAWN HUD — routes through backend so API key stays server-side
-  const spawnHud = async () => {
-    setLoading(true)
-    addLog('Generating HUD elements...')
-    try {
-      const res   = await fetch('http://localhost:8000/api/spawn-hud', { method: 'POST' })
-      const specs = await res.json()
-      const fresh = specs.map(s => ({ ...s, id: `el-${_eid++}` }))
-      setElements(prev => [...prev.filter(e => e.persistent), ...fresh])
-      addLog(`Spawned ${fresh.length} elements (${fresh.filter(e => e.persistent).length} pinned)`)
-    } catch {
-      addLog('HUD generation failed')
-    }
-    setLoading(false)
-  }
-
-  const removeElement = useCallback(id => setElements(els => els.filter(e => e.id !== id)), [])
-  const left  = elements.filter((_, i) => i % 2 === 0)
-  const right = elements.filter((_, i) => i % 2 === 1)
+  }, [tinaState])
 
   const handleSend = e => {
     e.preventDefault()
     const text = input.trim()
     if (!text || !connected) return
+    addLog(`KAI: ${text.slice(0, 60)}${text.length > 60 ? '…' : ''}`)
     sendMessage(text)
     setInput('')
     inputRef.current?.focus()
@@ -467,7 +374,20 @@ export default function App() {
   const cfg       = STATE_CFG[tinaState] ?? STATE_CFG.listening
   const isOffline = tinaState === 'offline'
   const dispLabel = activeAgent ? `→ ${activeAgent.name.toUpperCase()}` : isRecording ? 'LISTENING' : cfg.label
-  const dispSub   = activeAgent ? 'delegating to specialist' : isRecording ? 'Recording...' : cfg.sub
+  const dispSub   = activeAgent ? 'delegating' : isRecording ? 'recording…' : cfg.sub
+
+  // Panel routing
+  const infoPanels     = panels.filter(p => p.type !== 'agent')
+  const activityPanels = panels.filter(p => p.type === 'agent')
+
+  // Service dots for header
+  const svcDots = [
+    { key: 'ws',  label: 'WS',  ok: connected },
+    { key: 'dg',  label: 'DG',  ok: services?.deepgram },
+    { key: 'el',  label: 'EL',  ok: services?.elevenlabs },
+    { key: 'gh',  label: 'GH',  ok: services?.github },
+    { key: 'tv',  label: 'TV',  ok: services?.tavily },
+  ]
 
   return (
     <div style={{
@@ -478,11 +398,7 @@ export default function App() {
     }}>
 
       {/* Grid background */}
-      <div style={{
-        position: 'absolute', inset: 0, opacity: 0.06, pointerEvents: 'none',
-        backgroundImage: `linear-gradient(${P} 1px,transparent 1px),linear-gradient(90deg,${P} 1px,transparent 1px)`,
-        backgroundSize: '40px 40px',
-      }} />
+      <div style={{ position: 'absolute', inset: 0, opacity: 0.04, pointerEvents: 'none', backgroundImage: `linear-gradient(${P} 1px,transparent 1px),linear-gradient(90deg,${P} 1px,transparent 1px)`, backgroundSize: '40px 40px' }} />
 
       {/* Corner brackets */}
       {[
@@ -491,121 +407,86 @@ export default function App() {
         { bottom: 10, left:  10, borderBottom: `1px solid ${P}`, borderLeft:  `1px solid ${P}` },
         { bottom: 10, right: 10, borderBottom: `1px solid ${P}`, borderRight: `1px solid ${P}` },
       ].map((s, i) => (
-        <div key={i} style={{ position: 'absolute', width: 22, height: 22, opacity: isOffline ? 0.2 : 0.5, ...s }} />
+        <div key={i} style={{ position: 'absolute', width: 22, height: 22, opacity: isOffline ? 0.15 : 0.4, ...s }} />
       ))}
 
-      {/* Diagnostic overlay */}
+      {/* Overlays */}
+      {showCodePreview && codePreviewFiles.length > 0 && (
+        <CodePreviewPanel files={codePreviewFiles} onClose={() => setShowCodePreview(false)} />
+      )}
       {showDiag && Object.keys(diagResults).length > 0 && (
-        <DiagOverlay
-          results={diagResults}
-          running={diagRunning}
-          onClose={() => setShowDiag(false)}
-        />
+        <DiagOverlay results={diagResults} running={diagRunning} onClose={() => setShowDiag(false)} />
       )}
 
       {/* Offline overlay */}
       {isOffline && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 20, display: 'flex',
-          alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12,
-          background: 'rgba(8,4,15,0.88)',
-        }}>
-          <div style={{ fontSize: 28, letterSpacing: 8, color: '#E24B4A', opacity: 0.8, animation: 'offblink 2s ease-in-out infinite' }}>
-            TINA OFFLINE
-          </div>
-          <div style={{ fontSize: 9, letterSpacing: 3, color: '#E24B4A', opacity: 0.4 }}>
-            START BACKEND — python start.py
-          </div>
+        <div style={{ position: 'absolute', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, background: 'rgba(8,4,15,0.88)' }}>
+          <div style={{ fontSize: 28, letterSpacing: 8, color: '#E24B4A', opacity: 0.8, animation: 'offblink 2s ease-in-out infinite' }}>TINA OFFLINE</div>
+          <div style={{ fontSize: 9, letterSpacing: 3, color: '#E24B4A', opacity: 0.4 }}>START BACKEND — python start.py</div>
         </div>
       )}
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{
-        flexShrink: 0, zIndex: 1,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 28px', borderBottom: `1px solid ${P}44`,
-      }}>
-        <div style={{ flex: 1, fontSize: 9, letterSpacing: 3, opacity: 0.55 }}>
-          NEURAL CORE v2.0 · CLAUDE SONNET 4.6
+      {/* ── Header ────────────────────────────────────────────────────────── */}
+      <div style={{ flexShrink: 0, zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 24px', borderBottom: `1px solid ${P}33` }}>
+        {/* Service dots */}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          {svcDots.map(({ key, label, ok }) => (
+            <div key={key} title={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%', display: 'inline-block',
+                background: ok === undefined ? '#6b7280' : ok ? '#4ade80' : '#ef4444',
+                boxShadow:  ok === undefined ? 'none' : ok ? '0 0 5px #4ade80' : '0 0 5px #ef4444',
+              }} />
+              <span style={{ fontSize: 7, letterSpacing: 1, opacity: 0.4 }}>{label}</span>
+            </div>
+          ))}
         </div>
-        <div style={{ fontSize: 22, letterSpacing: 10, fontWeight: 'bold', color: '#fff', textShadow: `0 0 24px ${P}`, textAlign: 'center' }}>
+
+        {/* Title */}
+        <div style={{ fontSize: 20, letterSpacing: 10, fontWeight: 'bold', color: '#fff', textShadow: `0 0 20px ${P}` }}>
           T I N A
         </div>
-        <div style={{ flex: 1, textAlign: 'right', fontSize: 9, letterSpacing: 2, opacity: 0.55 }}>
+
+        {/* Time + state */}
+        <div style={{ textAlign: 'right', fontSize: 9, letterSpacing: 2, opacity: 0.5 }}>
           <div>{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
-          <div style={{ marginTop: 2 }}>{connected ? 'WS ACTIVE' : 'CONNECTING...'}</div>
+          <div style={{ marginTop: 2, color: isRecording ? '#ef4444' : PG }}>{cfg.label}</div>
         </div>
       </div>
 
-      {/* ── Main 3-column body ──────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', gap: 12, padding: '12px 16px', zIndex: 1 }}>
+      {/* ── 3-column body ─────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', gap: 10, padding: '10px 14px', zIndex: 1 }}>
 
-        {/* Left column — activity log + HUD elements */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'hidden', minWidth: 200 }}>
-
-          {/* Activity log — permanent */}
-          <div style={{ flexShrink: 0, border: `1px solid ${P}22`, borderRadius: 4, padding: '10px 14px', background: `${PF}cc` }}>
-            <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.65, marginBottom: 8 }}>ACTIVITY LOG</div>
-            {log.map((l, i) => (
-              <div key={i} style={{ fontSize: 10, letterSpacing: 0.3, opacity: Math.max(0.35, 1 - i * 0.09), marginBottom: 3, color: i === 0 ? PG : PG + '88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {l}
+        {/* Left — info panels (tool results) */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden', minWidth: 180 }}>
+          {infoPanels.length === 0 ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ fontSize: 8, letterSpacing: 3, opacity: 0.08, textAlign: 'center' }}>
+                CONTEXT ZONE<br />TOOL RESULTS APPEAR HERE
               </div>
-            ))}
-          </div>
-
-          {/* Dynamic HUD left */}
-          {left.map(el => (
-            <DynamicElement key={el.id} spec={el} onExpire={() => removeElement(el.id)} />
-          ))}
-          {left.length === 0 && (
-            <div style={{ flex: 1, border: `1px dashed ${P}10`, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.1, fontSize: 10, letterSpacing: 2 }}>
-              HUD ZONE A
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' }}>
+              {infoPanels.map(panel => (
+                <ContextPanel key={panel.id} panel={panel} onDismiss={dismissPanel} />
+              ))}
             </div>
           )}
         </div>
 
-        {/* Centre column — face + controls */}
-        <div style={{ flexShrink: 0, width: 380, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+        {/* Centre — face + controls */}
+        <div style={{ flexShrink: 0, width: 360, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
 
           {/* Face */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
-            <TinaFace state={tinaState} size={340} />
-            <div style={{ position: 'absolute', bottom: 50, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
-              <div style={{ fontSize: 11, letterSpacing: 5, color: activeAgent ? activeAgent.color : PG, opacity: 0.9, transition: 'color 0.4s' }}>{dispLabel}</div>
-              <div style={{ fontSize: 9, letterSpacing: 2, opacity: 0.35, marginTop: 2 }}>{dispSub}</div>
+            <TinaFace state={tinaState} size={310} />
+            <div style={{ position: 'absolute', bottom: 42, left: 0, right: 0, textAlign: 'center', pointerEvents: 'none' }}>
+              <div style={{ fontSize: 10, letterSpacing: 5, color: activeAgent ? activeAgent.color : PG, opacity: 0.9, transition: 'color 0.4s' }}>{dispLabel}</div>
+              <div style={{ fontSize: 8, letterSpacing: 2, opacity: 0.3, marginTop: 2 }}>{dispSub}</div>
             </div>
           </div>
 
-          {/* Active agent panel */}
-          <div style={{
-            width: '100%', overflow: 'hidden', flexShrink: 0,
-            maxHeight: activeAgent ? 80 : 0,
-            opacity: activeAgent ? 1 : 0,
-            transition: 'max-height 0.4s ease, opacity 0.3s ease',
-          }}>
-            {activeAgent && (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 12,
-                border: `1px solid ${activeAgent.color}44`,
-                borderRadius: 4, padding: '8px 14px',
-                background: `${PF}cc`,
-                boxShadow: `0 0 20px ${activeAgent.color}22`,
-              }}>
-                <TinaFace state="thinking" size={60} ringColor={activeAgent.glow} glowColor={activeAgent.color} />
-                <div>
-                  <div style={{ fontSize: 10, letterSpacing: 3, color: activeAgent.color, marginBottom: 3 }}>
-                    {activeAgent.name.toUpperCase()} AGENT
-                  </div>
-                  <div style={{ fontSize: 9, letterSpacing: 1, color: activeAgent.color, opacity: 0.5, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ animation: 'micpulse 1s ease-in-out infinite', display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: activeAgent.color }} />
-                    ACTIVE
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Input + controls */}
+          {/* Input + buttons */}
           <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 7, flexShrink: 0, marginTop: 'auto' }}>
             <form onSubmit={handleSend} style={{ display: 'flex', gap: 6 }}>
               <span style={{ fontSize: 13, color: P, opacity: 0.7, alignSelf: 'center', flexShrink: 0 }}>&gt;</span>
@@ -613,7 +494,7 @@ export default function App() {
                 ref={inputRef}
                 value={input}
                 onChange={e => setInput(e.target.value)}
-                placeholder={connected ? 'send a message...' : 'offline...'}
+                placeholder={connected ? 'send a message…' : 'offline…'}
                 disabled={!connected || isRecording}
                 autoFocus
                 style={{
@@ -648,79 +529,53 @@ export default function App() {
               </button>
             </form>
             <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={spawnHud} disabled={loading || !connected} style={{ ...btnStyle(connected && !loading), flex: 1 }}>
-                {loading ? 'THINKING...' : '✦ SPAWN HUD'}
-              </button>
               <button
                 onClick={() => { fetch('http://localhost:8000/api/diagnostics', { method: 'POST' }); addLog('Diagnostics started') }}
                 disabled={!connected || diagRunning}
-                style={btnStyle(connected && !diagRunning)}
+                style={{ ...btnStyle(connected && !diagRunning), flex: 1 }}
               >
-                {diagRunning ? '...' : 'DIAG'}
+                {diagRunning ? '⠿ SCANNING…' : '◎ DIAGNOSTICS'}
               </button>
-              <button onClick={() => { setElements(e => e.filter(x => x.persistent)); addLog('Ephemeral cleared') }} style={btnStyle(true, true)}>
-                CLEAR
-              </button>
-              <button onClick={() => { setElements([]); addLog('HUD reset') }} style={btnStyle(false, true)}>
-                RESET
+              <button onClick={() => setShowCodePreview(v => !v)} disabled={codePreviewFiles.length === 0} style={{ ...btnStyle(codePreviewFiles.length > 0), position: 'relative' }}>
+                CODE{codePreviewFiles.length > 0 ? ` (${codePreviewFiles.length})` : ''}
               </button>
             </div>
           </div>
         </div>
 
-        {/* Right column — status panels + response box + HUD elements */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'hidden', minWidth: 200 }}>
+        {/* Right — agent panels + activity log */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden', minWidth: 180 }}>
 
-          <ConnectionStatus connected={connected} services={services} />
-          <AgentStatus agentStatuses={agentStatuses} tinaState={tinaState} />
-          <SessionStats turnCount={turnCount} sessionStart={sessionStart} />
-
-          {/* Response text box */}
-          {showResponse && lastResponse && (
-            <div style={{
-              flexShrink: 0,
-              border: `1px solid ${P}55`,
-              borderRadius: 4,
-              padding: '12px 14px',
-              background: `${PF}cc`,
-              boxShadow: `0 0 20px ${P}22`,
-              animation: 'fadein 0.4s ease',
-              maxHeight: '45%',
-              overflow: 'hidden',
-            }}>
-              <div style={{ fontSize: 9, letterSpacing: 3, opacity: 0.5, marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
-                <span>TINA RESPONSE</span>
-                <span style={{ color: P, opacity: 0.8 }}>◆ LIVE</span>
-              </div>
-              <div style={{ fontSize: 11, lineHeight: 1.7, letterSpacing: 0.3, color: PG, opacity: 0.9, whiteSpace: 'pre-wrap', overflow: 'hidden' }}>
-                {lastResponse}
-              </div>
-            </div>
-          )}
-
-          {/* Dynamic HUD right */}
-          {right.map(el => (
-            <DynamicElement key={el.id} spec={el} onExpire={() => removeElement(el.id)} />
+          {/* Agent panels */}
+          {activityPanels.map(panel => (
+            <ContextPanel key={panel.id} panel={panel} onDismiss={dismissPanel} />
           ))}
-          {right.length === 0 && !lastResponse && (
-            <div style={{ flex: 1, border: `1px dashed ${P}10`, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.1, fontSize: 10, letterSpacing: 2 }}>
-              HUD ZONE B
+
+          {/* Code files badge */}
+          <CodeFilesBadge files={codePreviewFiles} onClick={() => setShowCodePreview(true)} />
+
+          {/* Activity log — toggleable via "Tina, hide the activity log" */}
+          {activityLogVisible && (
+            <div style={{ flex: 1, border: `1px solid ${P}18`, borderRadius: 4, padding: '10px 12px', background: `${PF}88`, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ fontSize: 8, letterSpacing: 3, opacity: 0.35, marginBottom: 8 }}>ACTIVITY</div>
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {log.map((l, i) => (
+                  <div key={i} style={{ fontSize: 9, letterSpacing: 0.2, opacity: Math.max(0.2, 1 - i * 0.07), color: i === 0 ? PG : PG + '99', lineHeight: 1.4 }}>
+                    {l}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* ── Footer status bar ───────────────────────────────────────────────── */}
-      <div style={{
-        flexShrink: 0, zIndex: 1,
-        display: 'flex', justifyContent: 'space-between',
-        padding: '6px 28px', borderTop: `1px solid ${P}44`,
-        fontSize: 9, letterSpacing: 2, opacity: 0.45,
-      }}>
-        <span>WS: {connected ? 'CONNECTED' : 'OFFLINE'}</span>
-        <span>STATE: {cfg.label}</span>
-        <span>ELEMENTS: {elements.length} ({elements.filter(e => e.persistent).length} PINNED)</span>
-        <span>DEEPGRAM · ELEVENLABS · TAVILY · GITHUB</span>
+      {/* ── Footer ────────────────────────────────────────────────────────── */}
+      <div style={{ flexShrink: 0, zIndex: 1, display: 'flex', justifyContent: 'space-between', padding: '5px 24px', borderTop: `1px solid ${P}22`, fontSize: 8, letterSpacing: 2, opacity: 0.35 }}>
+        <span>UPTIME {uptime}</span>
+        <span>EXCHANGES {turnCount}</span>
+        <span>PANELS {panels.length}</span>
+        <span>{connected ? 'CONNECTED' : 'OFFLINE'} · CLAUDE SONNET 4.6</span>
       </div>
 
       <style>{`
@@ -733,16 +588,4 @@ export default function App() {
       `}</style>
     </div>
   )
-}
-
-function btnStyle(active, dim = false) {
-  return {
-    padding: '7px 16px', fontSize: 10, letterSpacing: 2,
-    background: active ? `${P}33` : 'transparent',
-    border: `1px solid ${active ? P : P + '33'}`,
-    color: active ? PG : dim ? PG + '44' : PG + '66',
-    borderRadius: 3, cursor: active ? 'pointer' : 'not-allowed',
-    textTransform: 'uppercase', transition: 'all 0.2s',
-    fontFamily: "'Courier New',monospace",
-  }
 }

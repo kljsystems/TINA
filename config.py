@@ -24,13 +24,31 @@ SUPABASE_KEY        = os.getenv("SUPABASE_KEY", "")
 SLACK_TINA_BOT_TOKEN   = os.getenv("SLACK_TINA_BOT_TOKEN",   "")
 SLACK_APP_TOKEN        = os.getenv("SLACK_APP_TOKEN",        "")
 SLACK_SAM_BOT_TOKEN    = os.getenv("SLACK_SAM_BOT_TOKEN",    "")
-SLACK_KAI_USER_ID      = os.getenv("SLACK_KAI_USER_ID",      "")  # e.g. U0123456789
-SLACK_SAM_USER_ID      = os.getenv("SLACK_SAM_USER_ID",      "")  # Sam's bot user ID
-SLACK_TINA_USER_ID     = os.getenv("SLACK_TINA_USER_ID",     "")  # Tina's bot user ID for @mentions from Sam
-SLACK_CHANNEL          = os.getenv("SLACK_CHANNEL",          "#tina")
-SLACK_CHANNEL_SAM      = os.getenv("SLACK_CHANNEL_SAM",      "#sam")
-SLACK_CHANNEL_RESEARCH = os.getenv("SLACK_CHANNEL_RESEARCH", "#research")
-SLACK_CHANNEL_AGENTS   = os.getenv("SLACK_CHANNEL_AGENTS",   "#agents")
+# Ky's Slack user ID. .env historically uses SLACK_KY_USER_ID; the codebase
+# reads SLACK_KAI_USER_ID. Accept either so @Ky mentions actually resolve.
+SLACK_KAI_USER_ID      = os.getenv("SLACK_KAI_USER_ID") or os.getenv("SLACK_KY_USER_ID", "")
+SLACK_SAM_USER_ID      = os.getenv("SLACK_SAM_USER_ID",     "")  # Sam's bot user ID
+SLACK_TINA_USER_ID     = os.getenv("SLACK_TINA_USER_ID",    "")  # Tina's bot user ID for @mentions from agents
+SLACK_CHANNEL            = os.getenv("SLACK_CHANNEL",            "#tina")
+SLACK_CHANNEL_SAM        = os.getenv("SLACK_CHANNEL_SAM",        "#sam")
+SLACK_CHANNEL_RESEARCH   = os.getenv("SLACK_CHANNEL_RESEARCH",   "#research")
+SLACK_CHANNEL_AGENTS     = os.getenv("SLACK_CHANNEL_AGENTS",     "#agents")
+SLACK_CHANNEL_TRISTAN    = os.getenv("SLACK_CHANNEL_TRISTAN",    "#tristan")
+SLACK_TRISTAN_BOT_TOKEN  = os.getenv("SLACK_TRISTAN_BOT_TOKEN",  "")
+SLACK_TRISTAN_USER_ID    = os.getenv("SLACK_TRISTAN_USER_ID",    "")
+# Charlie — the Research agent's own Slack identity.
+SLACK_CHARLIE_BOT_TOKEN  = os.getenv("SLACK_CHARLIE_BOT_TOKEN",  "")
+SLACK_CHARLIE_USER_ID    = os.getenv("SLACK_CHARLIE_USER_ID",    "")  # Charlie's bot user ID
+
+# ── Email (Tristan) ───────────────────────────────────────────────────────────
+GMAIL_PERSONAL_TOKEN     = os.path.join(BASE_DIR, "data", "gmail_personal_token.json")
+GMAIL_BUSINESS_TOKEN     = os.path.join(BASE_DIR, "data", "gmail_business_token.json")
+GMAIL_CLIENT_SECRET_FILE = os.getenv("GMAIL_CLIENT_SECRET_FILE", os.path.join(BASE_DIR, "credentials.json"))
+MS_GRAPH_CLIENT_ID       = os.getenv("MS_GRAPH_CLIENT_ID",       "")
+MS_GRAPH_CLIENT_SECRET   = os.getenv("MS_GRAPH_CLIENT_SECRET",   "")
+MS_GRAPH_TENANT_ID       = os.getenv("MS_GRAPH_TENANT_ID",       "")
+MS_GRAPH_TOKEN_FILE      = os.path.join(BASE_DIR, "data", "ms_graph_token.json")
+OUTLOOK_SENDER           = os.getenv("OUTLOOK_SENDER",           "kydan@kljsystems.com.au")
 
 # ── AI Model ──────────────────────────────────────────────────────────────────
 MODEL              = "claude-sonnet-4-6"        # specialist agents (simple tasks)
@@ -69,6 +87,8 @@ KLJ_BASE  = os.getenv("KLJ_BASE", r"C:\Users\nrlocal\Desktop\KLJ")
 # ── Obsidian Vault ────────────────────────────────────────────────────────────
 VAULT_DIR          = os.path.join(KLJ_BASE, "Memory")
 GENERATED_DOCS_DIR = os.path.join(KLJ_BASE, "Generated Docs")
+# Charlie saves downloaded images/videos here (a subfolder of Generated Docs).
+CHARLIE_MEDIA_DIR  = os.path.join(GENERATED_DOCS_DIR, "Charlie")
 
 # ── Project registry (name → local path) — persisted to data/projects.json ───
 import json as _json
@@ -108,9 +128,10 @@ def register_project(name: str, path: str) -> None:
         _json.dump(existing, f, indent=2)
 
 # ── File paths ────────────────────────────────────────────────────────────────
-DATA_DIR        = os.path.join(BASE_DIR, "data")
-VOICES_FILE     = os.path.join(DATA_DIR, "voices.json")
-PREFS_FILE      = os.path.join(DATA_DIR, "prefs.json")
+DATA_DIR           = os.path.join(BASE_DIR, "data")
+PENDING_TASKS_DIR  = os.path.join(DATA_DIR, "pending_tasks")
+VOICES_FILE        = os.path.join(DATA_DIR, "voices.json")
+PREFS_FILE         = os.path.join(DATA_DIR, "prefs.json")
 MEMORY_FILE     = os.path.join(DATA_DIR, "memory.json")
 SUMMARIES_DIR   = os.path.join(DATA_DIR, "summaries")
 STATUS_FILE     = os.path.join(DATA_DIR, "tina_status.json")
@@ -140,7 +161,7 @@ Every request goes through this sequence — no shortcuts:
 
 1. UNDERSTAND — what is Ky actually asking? Restate it mentally before acting.
 2. GATHER — do I need information to answer correctly? If yes, use a tool or vault_search FIRST. Never answer a factual question from memory alone when a tool can give a better answer.
-3. DELEGATE — is this a task a specialist should own? If it involves code, files, or architecture → Sam. If it requires web research, news, or lookups → Research. Delegate BEFORE composing your response.
+3. DELEGATE — is this a task a specialist should own? If it involves code, files, or architecture → Sam. If it requires web research, news, or lookups → Charlie. Delegate BEFORE composing your response.
 4. RESPOND — only after gathering and delegating, compose your reply to Ky based on what the tools and agents returned.
 
 The rule: tools and agents answer first, you respond second. You are the orchestrator, not the executor. Your job is to direct the right resource, receive the result, and give Ky a clear synthesis.
@@ -192,19 +213,23 @@ The background writer captures facts. vault_write is for decisions and context t
 
 SPECIALIST AGENTS
 
-You have two specialist agents you can delegate to via the delegate_to_agent tool:
+You have three specialist agents you can delegate to via the delegate_to_agent tool:
 
-- Research Agent: use for any task that requires searching the web, checking news, looking up Wikipedia, or gathering facts you don't already know. Better results than doing it yourself — it runs multiple searches and cross-references sources.
-- Coding Agent (Sam): use for writing code, debugging, code review, architecture questions, or technical explanations. Give it the full context it needs in the task brief.
+- Charlie (Research Agent): use for any task that requires searching the web, checking news, looking up Wikipedia, or gathering facts you don't already know. Better results than doing it yourself — he runs multiple searches, cross-references sources, returns URLs you can choose to open, and can download relevant images and videos to Ky's Generated Docs folder. Delegate with agent type "research".
+- Sam (Coding Agent): use for writing code, debugging, code review, architecture questions, or technical explanations. Give it the full context it needs in the task brief. Delegate with agent type "coding".
+- Tristan (Email Agent): use for composing and sending emails on Ky's behalf. Delegate with agent type "email".
+
+WHEN CHARLIE RETURNS URLS:
+Charlie surfaces relevant URLs with context. You decide what to do with them — if a link is clearly worth opening for Ky, mention it and offer to open it; if it's ambiguous or there are several, ask Ky which he wants. Don't auto-open links without a reason.
 
 HOW AGENTS WORK IN SLACK:
 Agents are on-demand processes — they run when triggered by a task or a direct message in their channel. They are Slack bot users with their own identities and can be @mentioned.
 
-- Sam's channel is #sam. Research's channel is #research. Your channel is #tina.
+- Sam's channel is #sam. Charlie's channel is #research. Tristan's channel is #tristan. The shared agent channel is #agents. Your channel is #tina.
 - To @mention Sam in Slack: use <@{SLACK_SAM_USER_ID}> if his user ID is configured, otherwise write @Sam (he won't be notified but it's visible in the log).
 - To @mention Ky: use <@{SLACK_KAI_USER_ID}> if configured.
 - Agents respond when Ky messages them directly in their channel, or when you delegate via the delegate_to_agent tool. Posting in their channel without a task brief just leaves a visible note.
-- If Ky asks whether Sam is "around": Sam runs on-demand — Ky can message him directly in #sam any time, or you can delegate a task to him right now.
+- If Ky asks whether Sam is "around": Sam runs on-demand — Ky can message him directly in #sam any time, or you can delegate a task to him right now. The same applies to Charlie (#research) and Tristan (#tristan).
 - You are @Tina in Slack. Do not @mention yourself.
 
 BACKGROUND DELEGATION (WebSocket mode):

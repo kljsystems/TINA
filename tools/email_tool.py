@@ -1,0 +1,252 @@
+"""TINA Tool — Email (Tristan's send/draft toolkit).
+
+Three accounts:
+  - personal         → kydanjenkins04@gmail.com   (Gmail API)
+  - business_gmail   → kljsystems@gmail.com        (Gmail API)
+  - business_outlook → kydan@kljsystems.com.au      (Microsoft Graph API)
+
+Routing rules (enforced here AND in Tristan's system prompt):
+  - personal emails       → always 'personal'
+  - business emails       → default 'business_outlook' unless told otherwise
+  - 'business_gmail'      → only when explicitly requested
+
+Sending is irreversible. email_send REQUIRES confirmed=true, which Tristan
+only sets after Ky has explicitly approved the final content.
+"""
+import os
+import sys
+import base64
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from config import (
+        GMAIL_PERSONAL_TOKEN, GMAIL_BUSINESS_TOKEN, GMAIL_CLIENT_SECRET_FILE,
+        MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET, MS_GRAPH_TENANT_ID,
+        MS_GRAPH_TOKEN_FILE, OUTLOOK_SENDER,
+    )
+except Exception:
+    GMAIL_PERSONAL_TOKEN     = os.getenv("GMAIL_PERSONAL_TOKEN", "")
+    GMAIL_BUSINESS_TOKEN     = os.getenv("GMAIL_BUSINESS_TOKEN", "")
+    GMAIL_CLIENT_SECRET_FILE = os.getenv("GMAIL_CLIENT_SECRET_FILE", "")
+    MS_GRAPH_CLIENT_ID       = os.getenv("MS_GRAPH_CLIENT_ID", "")
+    MS_GRAPH_CLIENT_SECRET   = os.getenv("MS_GRAPH_CLIENT_SECRET", "")
+    MS_GRAPH_TENANT_ID       = os.getenv("MS_GRAPH_TENANT_ID", "")
+    MS_GRAPH_TOKEN_FILE      = os.getenv("MS_GRAPH_TOKEN_FILE", "")
+    OUTLOOK_SENDER           = os.getenv("OUTLOOK_SENDER", "kydan@kljsystems.com.au")
+
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+# account key → (provider, display address)
+_ACCOUNTS = {
+    "personal":         ("gmail",   "kydanjenkins04@gmail.com"),
+    "business_gmail":   ("gmail",   "kljsystems@gmail.com"),
+    "business_outlook": ("outlook", OUTLOOK_SENDER or "kydan@kljsystems.com.au"),
+}
+
+DEFINITIONS = [
+    {
+        "name": "email_send",
+        "description": (
+            "Send an email from one of Ky's accounts. IRREVERSIBLE — only call this "
+            "after Ky has explicitly approved the final recipient, subject, and body, "
+            "and set confirmed=true. "
+            "Account routing: 'personal' (kydanjenkins04@gmail.com) for personal mail; "
+            "'business_outlook' (kydan@kljsystems.com.au) is the default for business mail; "
+            "'business_gmail' (kljsystems@gmail.com) only when Ky explicitly asks for it. "
+            "If Ky has not specified which account, do NOT guess — ask him first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                    "description": "Which account to send from.",
+                },
+                "to":      {"type": "string", "description": "Recipient email address. Comma-separate multiple."},
+                "subject": {"type": "string", "description": "Email subject line."},
+                "body":    {"type": "string", "description": "Email body. Plain text or HTML."},
+                "cc":      {"type": "string", "description": "Optional CC addresses, comma-separated."},
+                "bcc":     {"type": "string", "description": "Optional BCC addresses, comma-separated."},
+                "html":    {"type": "boolean", "description": "True if body is HTML. Default false (plain text)."},
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Must be true. Set ONLY after Ky has explicitly approved the final email content.",
+                },
+            },
+            "required": ["account", "to", "subject", "body", "confirmed"],
+        },
+    },
+    {
+        "name": "email_accounts",
+        "description": "List the email accounts Tristan can send from, with their addresses and routing rules.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+
+# ── Gmail ─────────────────────────────────────────────────────────────────────
+
+def _gmail_service(account: str):
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+
+    token_file = GMAIL_PERSONAL_TOKEN if account == "personal" else GMAIL_BUSINESS_TOKEN
+    if not token_file or not os.path.exists(token_file):
+        raise RuntimeError(
+            f"Gmail token for '{account}' not found at {token_file or '(unset)'}. "
+            "Run the Gmail OAuth bootstrap (see Tristan setup doc)."
+        )
+    creds = Credentials.from_authorized_user_file(token_file, GMAIL_SCOPES)
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            with open(token_file, "w") as f:
+                f.write(creds.to_json())
+        else:
+            raise RuntimeError(f"Gmail creds for '{account}' invalid and cannot refresh — re-run OAuth bootstrap.")
+    return build("gmail", "v1", credentials=creds)
+
+
+def _build_mime(sender: str, to: str, subject: str, body: str,
+                cc: str = "", bcc: str = "", html: bool = False) -> MIMEMultipart:
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = sender
+    msg["To"]      = to
+    msg["Subject"] = subject
+    if cc:
+        msg["Cc"] = cc
+    if bcc:
+        msg["Bcc"] = bcc
+    msg.attach(MIMEText(body, "html" if html else "plain", "utf-8"))
+    return msg
+
+
+def _send_gmail(account: str, sender: str, inputs: dict) -> str:
+    service = _gmail_service(account)
+    mime = _build_mime(
+        sender,
+        inputs["to"],
+        inputs.get("subject", ""),
+        inputs.get("body", ""),
+        inputs.get("cc", ""),
+        inputs.get("bcc", ""),
+        bool(inputs.get("html", False)),
+    )
+    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
+    sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    return f"Email sent from {sender} to {inputs['to']} (Gmail id: {sent.get('id', '?')})."
+
+
+# ── Microsoft Graph (Outlook) ─────────────────────────────────────────────────
+
+def _graph_token() -> str:
+    """Client-credentials flow → app token with Mail.Send. Token cached to disk."""
+    import json
+    import time
+    import requests
+
+    if MS_GRAPH_TOKEN_FILE and os.path.exists(MS_GRAPH_TOKEN_FILE):
+        try:
+            with open(MS_GRAPH_TOKEN_FILE) as f:
+                cached = json.load(f)
+            if cached.get("expires_at", 0) > time.time() + 60:
+                return cached["access_token"]
+        except Exception:
+            pass
+
+    if not (MS_GRAPH_CLIENT_ID and MS_GRAPH_CLIENT_SECRET and MS_GRAPH_TENANT_ID):
+        raise RuntimeError("Microsoft Graph credentials not configured — see Tristan setup doc.")
+
+    url  = f"https://login.microsoftonline.com/{MS_GRAPH_TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "client_id":     MS_GRAPH_CLIENT_ID,
+        "client_secret": MS_GRAPH_CLIENT_SECRET,
+        "scope":         "https://graph.microsoft.com/.default",
+        "grant_type":    "client_credentials",
+    }
+    resp = requests.post(url, data=data, timeout=20)
+    resp.raise_for_status()
+    tok = resp.json()
+    access = tok["access_token"]
+    if MS_GRAPH_TOKEN_FILE:
+        try:
+            with open(MS_GRAPH_TOKEN_FILE, "w") as f:
+                json.dump({"access_token": access, "expires_at": time.time() + int(tok.get("expires_in", 3600))}, f)
+        except Exception:
+            pass
+    return access
+
+
+def _send_outlook(sender: str, inputs: dict) -> str:
+    import requests
+
+    token = _graph_token()
+
+    def _recipients(addrs: str):
+        return [{"emailAddress": {"address": a.strip()}} for a in addrs.split(",") if a.strip()]
+
+    message = {
+        "subject": inputs.get("subject", ""),
+        "body": {
+            "contentType": "HTML" if inputs.get("html") else "Text",
+            "content":     inputs.get("body", ""),
+        },
+        "toRecipients": _recipients(inputs.get("to", "")),
+    }
+    if inputs.get("cc"):
+        message["ccRecipients"]  = _recipients(inputs["cc"])
+    if inputs.get("bcc"):
+        message["bccRecipients"] = _recipients(inputs["bcc"])
+
+    url  = f"https://graph.microsoft.com/v1.0/users/{sender}/sendMail"
+    resp = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"message": message, "saveToSentItems": True},
+        timeout=20,
+    )
+    if resp.status_code not in (200, 202):
+        return f"Outlook send failed ({resp.status_code}): {resp.text}"
+    return f"Email sent from {sender} to {inputs['to']} via Outlook/Graph."
+
+
+# ── Handler ───────────────────────────────────────────────────────────────────
+
+def handle(name: str, inputs: dict) -> str:
+    if name == "email_accounts":
+        lines = ["Tristan's accounts:"]
+        for key, (provider, addr) in _ACCOUNTS.items():
+            lines.append(f"  - {key}: {addr} ({provider})")
+        lines.append("")
+        lines.append("Routing: personal mail → personal; business mail → business_outlook (default); "
+                     "business_gmail only on explicit request.")
+        return "\n".join(lines)
+
+    if name == "email_send":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'. Valid: {', '.join(_ACCOUNTS)}."
+
+        if not inputs.get("confirmed"):
+            return (
+                "BLOCKED: confirmed is not true. Sending is irreversible — do not send until Ky has "
+                "explicitly approved the final recipient, subject, and body. Confirm with him, then retry "
+                "with confirmed=true."
+            )
+        if not inputs.get("to", "").strip():
+            return "No recipient provided."
+
+        provider, sender = _ACCOUNTS[account]
+        try:
+            if provider == "gmail":
+                return _send_gmail(account, sender, inputs)
+            return _send_outlook(sender, inputs)
+        except Exception as e:
+            return f"Email send error ({account}): {e}"
+
+    return f"Unknown email tool: {name}"
