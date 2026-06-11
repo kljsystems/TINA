@@ -372,6 +372,7 @@ export default function App() {
   const convoLen        = useRef(0)
   const prevConn        = useRef(false)
   const responseDismiss = useRef(null)
+  const diagDismiss     = useRef(null)
 
   // Show response box as soon as text arrives — no timer yet
   useEffect(() => {
@@ -384,16 +385,27 @@ export default function App() {
     }
   }, [lastResponse])
 
-  // Start 10s dismiss countdown only after Tina finishes speaking
+  // Start 10s dismiss countdowns only after Tina finishes speaking
   useEffect(() => {
-    if (tinaState === 'listening' && lastResponse) {
-      if (responseDismiss.current) clearTimeout(responseDismiss.current)
-      responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
+    if (tinaState === 'listening') {
+      if (lastResponse) {
+        if (responseDismiss.current) clearTimeout(responseDismiss.current)
+        responseDismiss.current = setTimeout(() => setShowResponse(false), 10000)
+      }
+      if (showDiag && !diagRunning) {
+        if (diagDismiss.current) clearTimeout(diagDismiss.current)
+        diagDismiss.current = setTimeout(() => setShowDiag(false), 10000)
+      }
     }
   }, [tinaState])
 
-  // Auto-show diag overlay when running
-  useEffect(() => { if (diagRunning) setShowDiag(true) }, [diagRunning])
+  // Auto-show diag overlay when running; cancel any pending close timer
+  useEffect(() => {
+    if (diagRunning) {
+      setShowDiag(true)
+      if (diagDismiss.current) clearTimeout(diagDismiss.current)
+    }
+  }, [diagRunning])
 
   // Clock
   useEffect(() => {
