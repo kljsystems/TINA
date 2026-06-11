@@ -47,6 +47,58 @@ async def load_history(agent: str, limit: int = 40) -> list[dict]:
         return []
 
 
+async def search_history(query: str, agent: str = "tina", limit: int = 20) -> str:
+    """
+    Full-text search across all stored conversation turns for an agent.
+    Returns a formatted summary of matching turns with dates.
+    Used when something may have been discussed beyond the 40-turn window.
+    """
+    def _search():
+        result = (
+            _get_client()
+            .table("conversations")
+            .select("role,content,created_at,session_id")
+            .eq("agent", agent)
+            .ilike("content", f"%{query}%")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data
+    try:
+        rows = await asyncio.to_thread(_search)
+        if not rows:
+            return f"No matches found for '{query}' in conversation history."
+
+        # Group into sessions to show paired turns together
+        sessions: dict = {}
+        order: list    = []
+        for row in rows:
+            sid = row["session_id"]
+            if sid not in sessions:
+                sessions[sid] = []
+                order.append(sid)
+            sessions[sid].append(row)
+
+        lines = [f"Found {len(rows)} match(es) for '{query}' across {len(order)} session(s):\n"]
+        for sid in order[:8]:  # cap at 8 sessions for readability
+            session_rows = sessions[sid]
+            date = session_rows[0].get("created_at", "")[:10]
+            lines.append(f"— Session {date}")
+            for row in session_rows[:3]:  # max 3 turns per session
+                role    = "Ky" if row["role"] == "user" else "Tina"
+                excerpt = row["content"][:300].replace("\n", " ")
+                if len(row["content"]) > 300:
+                    excerpt += "..."
+                lines.append(f"  {role}: {excerpt}")
+            lines.append("")
+
+        return "\n".join(lines).strip()
+    except Exception as e:
+        print(f"[memory_db] search error ({agent}): {e}")
+        return f"Search failed: {e}"
+
+
 async def load_recent_tasks(agent: str, limit: int = 8) -> str:
     """
     Load recent task/result pairs for a specialist agent as a plain-text summary.

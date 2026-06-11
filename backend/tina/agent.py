@@ -64,6 +64,27 @@ _DELEGATE_TOOL = {
     },
 }
 
+# ── Conversation history search tool ─────────────────────────────────────────
+_SEARCH_HISTORY_TOOL = {
+    "name":        "search_conversation_history",
+    "description": (
+        "Search the full conversation history in the database for any topic or keyword — "
+        "going back further than the 40-turn context window. "
+        "Use this when Ky references something that may have been discussed in a previous session, "
+        "or when you want to check whether something has already been covered before answering."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type":        "string",
+                "description": "Keyword or phrase to search for across all past conversations.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
 # ── Agent status tool ────────────────────────────────────────────────────────
 _STATUS_TOOL = {
     "name":        "get_agent_status",
@@ -85,7 +106,7 @@ _STATUS_TOOL = {
     },
 }
 
-_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL, _STATUS_TOOL]
+_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL, _STATUS_TOOL, _SEARCH_HISTORY_TOOL]
 
 
 class TinaAgent:
@@ -166,6 +187,12 @@ class TinaAgent:
                 return reply
 
     async def _dispatch(self, name: str, inputs: dict, on_tool=None, on_agent_done=None, background: bool = True) -> str:
+        if name == "search_conversation_history":
+            if SUPABASE_URL:
+                from tina.memory_db import search_history
+                return await search_history(inputs.get("query", ""))
+            return "Supabase not configured — conversation history unavailable."
+
         if name == "get_agent_status":
             from tina.agent_state import get_status
             return get_status(inputs.get("agent", ""))
