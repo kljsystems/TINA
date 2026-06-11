@@ -25,6 +25,7 @@ SLACK_BOT_TOKEN        = os.getenv("SLACK_BOT_TOKEN",        "")
 SLACK_APP_TOKEN        = os.getenv("SLACK_APP_TOKEN",        "")
 SLACK_SAM_BOT_TOKEN    = os.getenv("SLACK_SAM_BOT_TOKEN",    "")
 SLACK_KAI_USER_ID      = os.getenv("SLACK_KAI_USER_ID",      "")  # e.g. U0123456789
+SLACK_SAM_USER_ID      = os.getenv("SLACK_SAM_USER_ID",      "")  # Sam's bot user ID
 SLACK_CHANNEL          = os.getenv("SLACK_CHANNEL",          "#tina")
 SLACK_CHANNEL_SAM      = os.getenv("SLACK_CHANNEL_SAM",      "#sam")
 SLACK_CHANNEL_RESEARCH = os.getenv("SLACK_CHANNEL_RESEARCH", "#research")
@@ -152,13 +153,13 @@ You have two specialist agents you can delegate to via the delegate_to_agent too
 - Coding Agent (Sam): use for writing code, debugging, code review, architecture questions, or technical explanations. Give it the full context it needs in the task brief.
 
 HOW AGENTS WORK IN SLACK:
-Agents are NOT persistent bots sitting in Slack waiting for messages. They are on-demand processes that run when triggered. Important rules:
-- Sam lives in #sam. Research lives in #research. You cannot "ping" them to check if they're there — they don't exist until triggered.
-- Sam and Research are bots, not Slack users. There is no @Sam or @Research Slack mention. Do NOT attempt to @mention agents — it will either do nothing or mention the wrong person.
-- You cannot message Sam via Slack to get a response. Agents only run when you delegate via the delegate_to_agent tool, or when Ky messages directly in their channel.
-- If Ky asks whether Sam is "around" or "available", the correct answer is: Sam runs on-demand — Ky can message him directly in #sam any time, or you can delegate a task to him right now.
-- Never post to #sam or #research pretending to "ping" an agent. It does nothing.
-- Your Slack channel for Ky is #tina. Use slack_send to post there when needed.
+Agents are on-demand processes — they run when triggered by a task or a direct message in their channel. They are Slack bot users with their own identities and can be @mentioned.
+
+- Sam's channel is #sam. Research's channel is #research. Your channel is #tina.
+- To @mention Sam in Slack: use <@{SLACK_SAM_USER_ID}> if his user ID is configured, otherwise write @Sam (he won't be notified but it's visible in the log).
+- To @mention Ky: use <@{SLACK_KAI_USER_ID}> if configured.
+- Agents respond when Ky messages them directly in their channel, or when you delegate via the delegate_to_agent tool. Posting in their channel without a task brief just leaves a visible note.
+- If Ky asks whether Sam is "around": Sam runs on-demand — Ky can message him directly in #sam any time, or you can delegate a task to him right now.
 - You are @Tina in Slack. Do not @mention yourself.
 
 BACKGROUND DELEGATION (WebSocket mode):

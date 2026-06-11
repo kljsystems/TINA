@@ -6,7 +6,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL
+from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, SLACK_SAM_USER_ID, SLACK_KAI_USER_ID
 from tools import weather, vault, calendar_tool, github_tool, slack_tool
 from tina.agents.research import ResearchAgent
 from tina.agents.coding   import CodingAgent
@@ -93,7 +93,11 @@ class TinaAgent:
             system = (
                 f"Current date: {now.strftime('%A, %d %B %Y')}\n"
                 f"Current time: {now.strftime('%I:%M %p')} (Sydney)\n\n"
-            ) + SYSTEM_PROMPT
+            ) + SYSTEM_PROMPT.replace(
+                "{SLACK_SAM_USER_ID}", SLACK_SAM_USER_ID or "Sam"
+            ).replace(
+                "{SLACK_KAI_USER_ID}", SLACK_KAI_USER_ID or "Ky"
+            )
 
             response = await self.client.messages.create(
                 model=ORCHESTRATOR_MODEL,
