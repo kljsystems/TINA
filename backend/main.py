@@ -268,8 +268,19 @@ async def _direct_agent_chat(agent_key: str, text: str, channel: str):
         await _slack_post(channel, f"Error: {e}", token=agent_token)
 
 
+async def diag_runner():
+    """Called by TinaAgent when Ky asks for a diagnostic."""
+    from tina.diagnostics import CHECKS
+    await broadcast({"type": "diag_start", "checks": [cid for cid, _ in CHECKS]})
+
+    async def on_result(check_id, label, status, detail):
+        await broadcast({"type": "diag_update", "id": check_id, "label": label, "status": status, "detail": detail})
+
+    asyncio.create_task(_run_diagnostics_task(on_result))
+
+
 # ── Agent instance (wired with background runner) ─────────────────────────────
-agent      = TinaAgent(background_runner=background_runner)
+agent      = TinaAgent(background_runner=background_runner, diag_runner=diag_runner)
 _hud_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 _HUD_SYSTEM = """You are TINA's neural core generating live dashboard intelligence panels.

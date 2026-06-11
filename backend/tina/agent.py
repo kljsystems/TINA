@@ -22,6 +22,18 @@ _DIRECT_MODULES  = [weather, vault, calendar_tool, github_tool, slack_tool]
 _DIRECT_DEFS     = [d for m in _DIRECT_MODULES for d in m.DEFINITIONS]
 _DIRECT_HANDLERS = {d["name"]: m.handle for m in _DIRECT_MODULES for d in m.DEFINITIONS}
 
+# ── Diagnostics tool ─────────────────────────────────────────────────────────
+_DIAG_TOOL = {
+    "name":        "run_diagnostics",
+    "description": (
+        "Run a full system diagnostic. Tests all API keys, services, agents, "
+        "memory, and integrations. Results stream live to the dashboard. "
+        "Use when Ky asks you to run a diagnostic, check system health, "
+        "or verify that everything is working."
+    ),
+    "input_schema": {"type": "object", "properties": {}, "required": []},
+}
+
 # ── Delegation tool ───────────────────────────────────────────────────────────
 _DELEGATE_TOOL = {
     "name":        "delegate_to_agent",
@@ -52,14 +64,15 @@ _DELEGATE_TOOL = {
     },
 }
 
-_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL]
+_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL]
 
 
 class TinaAgent:
-    def __init__(self, background_runner=None):
+    def __init__(self, background_runner=None, diag_runner=None):
         self.client            = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         self.history:list[dict] = []
         self.background_runner = background_runner  # injected by main.py
+        self.diag_runner       = diag_runner        # injected by main.py
         self.session_id        = str(uuid.uuid4())
         self._history_loaded   = False
 
@@ -132,6 +145,11 @@ class TinaAgent:
                 return reply
 
     async def _dispatch(self, name: str, inputs: dict, on_tool=None, on_agent_done=None, background: bool = True) -> str:
+        if name == "run_diagnostics":
+            if self.diag_runner:
+                await self.diag_runner()
+            return "Diagnostics running — results are streaming live to the dashboard."
+
         if name == "delegate_to_agent":
             agent_key = inputs.get("agent", "")
             task      = inputs.get("task", "")
