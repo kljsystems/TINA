@@ -9,20 +9,61 @@ from config import ANTHROPIC_API_KEY, MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
 
 
 async def _load_project_context(task: str) -> str:
-    """Return the stored codebase index for any project mentioned in the task."""
+    """
+    Auto-inject project context for any project mentioned in the task.
+    Pulls three sources in order: CLAUDE.md, codebase index, recent vault notes.
+    """
     task_lower = task.lower()
     for name in PROJECTS:
-        if name.lower() in task_lower:
-            index_path = os.path.join(VAULT_DIR, "01-Projects", name, "codebase-index.md")
-            if os.path.exists(index_path):
-                try:
-                    with open(index_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    if len(content) > 8000:
-                        content = content[:8000] + "\n...(truncated — full index in vault)"
-                    return f"[{name.upper()} CODEBASE INDEX — auto-injected]\n{content}"
-                except Exception:
-                    pass
+        if name.lower() not in task_lower:
+            continue
+
+        parts        = []
+        project_vault = os.path.join(VAULT_DIR, "01-Projects", name)
+
+        # 1. Project CLAUDE.md — architecture, decisions, current state
+        claude_md = os.path.join(project_vault, "CLAUDE.md")
+        if os.path.exists(claude_md):
+            try:
+                content = open(claude_md, encoding="utf-8").read()
+                if len(content) > 4000:
+                    content = content[:4000] + "\n...(truncated — full doc in vault)"
+                parts.append(f"[{name.upper()} PROJECT CONTEXT — CLAUDE.md]\n{content}")
+            except Exception:
+                pass
+
+        # 2. Codebase index — file tree, file descriptions, patterns
+        index_path = os.path.join(project_vault, "codebase-index.md")
+        if os.path.exists(index_path):
+            try:
+                content = open(index_path, encoding="utf-8").read()
+                if len(content) > 6000:
+                    content = content[:6000] + "\n...(truncated — full index in vault)"
+                parts.append(f"[{name.upper()} CODEBASE INDEX]\n{content}")
+            except Exception:
+                pass
+
+        # 3. Recent project notes — decisions, discoveries, technical context
+        notes_dir = os.path.join(project_vault, "Notes")
+        if os.path.isdir(notes_dir):
+            try:
+                note_files = sorted(
+                    [f for f in os.listdir(notes_dir) if f.endswith(".md")],
+                    key=lambda f: os.path.getmtime(os.path.join(notes_dir, f)),
+                    reverse=True,
+                )[:5]
+                if note_files:
+                    snippets = []
+                    for fname in note_files:
+                        content = open(os.path.join(notes_dir, fname), encoding="utf-8").read()
+                        snippets.append(f"### {fname}\n{content[:600]}")
+                    parts.append(f"[{name.upper()} RECENT VAULT NOTES]\n" + "\n\n".join(snippets))
+            except Exception:
+                pass
+
+        if parts:
+            return "\n\n---\n\n".join(parts)
+
     return ""
 
 _QUESTION_RE = re.compile(r'\[QUESTION:\s*(.+?)\]', re.DOTALL | re.IGNORECASE)
