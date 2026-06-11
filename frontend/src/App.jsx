@@ -296,11 +296,9 @@ function DiagOverlay({ results, running, onClose }) {
               {running ? `RUNNING · ${done}/${total} complete` : `COMPLETE · ${passed} PASS · ${warned} WARN · ${failed} FAIL`}
             </div>
           </div>
-          {!running && (
-            <button onClick={onClose} style={{ ...btnStyle(true, false), padding: '4px 12px', fontSize: 9 }}>
-              CLOSE
-            </button>
-          )}
+          <button onClick={onClose} style={{ ...btnStyle(true, false), padding: '4px 12px', fontSize: 9 }}>
+            {running ? 'HIDE' : 'CLOSE'}
+          </button>
         </div>
 
         {/* Progress bar */}

@@ -483,19 +483,27 @@ async def _run_diagnostics_task(on_result):
 
 
 async def _diag_review(issues: list[tuple[str, str, str]]):
-    """Have Tina review diagnostic issues — fix what she can, notify Ky about the rest."""
+    """Review diagnostic issues — fix what's possible, notify Ky about the rest via Slack."""
     lines = "\n".join(f"{status.upper()}: {label} — {detail}" for label, status, detail in issues)
     prompt = (
         f"A system diagnostic just completed and found these issues:\n\n{lines}\n\n"
-        "For each issue: fix it yourself if you have the tools to do so. "
-        "For anything that needs Ky's action (buying credits, re-authenticating, etc.), "
-        "send a Slack message to #tina with clear, specific steps — include links where relevant. "
-        "Be concise. Don't list issues that are already resolved."
+        "Write a brief Slack message for Ky summarising each issue and the exact action needed to fix it. "
+        "Include relevant links (e.g. elevenlabs.io/subscription for credit issues). "
+        "Be direct and specific. Plain text only, no markdown headers."
     )
     try:
-        reply = await agent.chat(prompt, background=False)
-        await broadcast({"type": "response", "text": reply})
-        asyncio.create_task(_tts_stream(reply))
+        # Use a plain Anthropic call — no tools, no loop risk
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp   = await client.messages.create(
+            model=ORCHESTRATOR_MODEL,
+            max_tokens=512,
+            system="You are Tina, a concise AI assistant. Write short, actionable Slack notifications.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        review = next((b.text for b in resp.content if hasattr(b, "text")), "")
+        if review:
+            await _slack_post(SLACK_CHANNEL, f"*Diagnostic issues found:*\n\n{review}")
+            print(f"[diag_review] posted to Slack: {review[:80]}...")
     except Exception as e:
         print(f"[diag_review] error: {e}")
 
