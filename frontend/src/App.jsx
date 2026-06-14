@@ -11,7 +11,8 @@ const AGENTS = [
   { key: 'coding',   name: 'SAM',     role: 'Code',     color: '#10b981', glow: '#6ee7b7' },
   { key: 'research', name: 'CHARLIE', role: 'Research', color: '#06b6d4', glow: '#67e8f9' },
   { key: 'email',    name: 'TRISTAN', role: 'Email',    color: '#f59e0b', glow: '#fcd34d' },
-  { key: 'data',     name: 'CONNOR',  role: 'Data',     color: '#a78bfa', glow: '#c4b5fd' },
+  { key: 'data',      name: 'CONNOR', role: 'Data',      color: '#a78bfa', glow: '#c4b5fd' },
+  { key: 'marketing', name: 'WADE',   role: 'Marketing', color: '#ec4899', glow: '#f9a8d4' },
 ]
 
 const PANEL_CFG = {

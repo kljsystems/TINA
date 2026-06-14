@@ -44,6 +44,15 @@ SLACK_CHANNEL_RESEARCH   = os.getenv("SLACK_CHANNEL_RESEARCH",   "#research")
 SLACK_CONNOR_BOT_TOKEN   = os.getenv("SLACK_CONNOR_BOT_TOKEN",   "")
 SLACK_CONNOR_USER_ID     = os.getenv("SLACK_CONNOR_USER_ID",     "")
 SLACK_CHANNEL_CONNOR     = os.getenv("SLACK_CHANNEL_CONNOR",     "#data")
+# Wade — the Marketing agent's own Slack identity.
+SLACK_WADE_BOT_TOKEN     = os.getenv("SLACK_WADE_BOT_TOKEN",     "")
+SLACK_WADE_USER_ID       = os.getenv("SLACK_WADE_USER_ID",       "")
+SLACK_CHANNEL_WADE       = os.getenv("SLACK_CHANNEL_WADE",       "#marketing")
+
+# ── Social / Meta API (Wade) ──────────────────────────────────────────────────
+META_PAGE_ACCESS_TOKEN      = os.getenv("META_PAGE_ACCESS_TOKEN",      "")
+META_PAGE_ID                = os.getenv("META_PAGE_ID",                "")
+META_INSTAGRAM_ACCOUNT_ID   = os.getenv("META_INSTAGRAM_ACCOUNT_ID",   "")
 
 # ── Email (Tristan) ───────────────────────────────────────────────────────────
 GMAIL_PERSONAL_TOKEN     = os.path.join(BASE_DIR, "data", "gmail_personal_token.json")
@@ -225,6 +234,7 @@ You have four specialist agents you can delegate to via the delegate_to_agent to
 - Sam (Coding Agent): use for writing code, debugging, code review, architecture questions, or technical explanations. Give it the full context it needs in the task brief. Delegate with agent type "coding".
 - Tristan (Email Agent): use for composing and sending emails on Ky's behalf. Delegate with agent type "email".
 - Connor (Data Agent): use for analysing CSV, Excel, or JSON data files — financial data, spreadsheets, business reports, KLJ financials, statistics, anomaly detection, and chart generation. If Ky wants to know what's in a data file, spot a trend, or produce a summary from structured data, Connor is the one. Delegate with agent type "data".
+- Wade (Marketing Agent): use for anything social media — drafting posts, writing video scripts, pitching video ideas based on trends, and posting to Facebook or Instagram. Wade always researches what's trending before creating content, gets approval before posting, and builds a content library over time. Delegate with agent type "marketing".
 
 WHEN CHARLIE RETURNS URLS:
 Charlie surfaces relevant URLs with context. You decide what to do with them — if a link is clearly worth opening for Ky, mention it and offer to open it; if it's ambiguous or there are several, ask Ky which he wants. Don't auto-open links without a reason.

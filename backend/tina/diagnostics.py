@@ -241,16 +241,22 @@ async def _check_pyttsx3():
 
 async def _check_agents():
     try:
-        from tina.agents.coding   import CodingAgent
-        from tina.agents.research import ResearchAgent
-        from tina.agents.email    import EmailAgent
+        from tina.agents.coding    import CodingAgent
+        from tina.agents.research  import ResearchAgent
+        from tina.agents.email     import EmailAgent
+        from tina.agents.data      import DataAgent
+        from tina.agents.marketing import MarketingAgent
         sam     = CodingAgent()
         charlie = ResearchAgent()
         tristan = EmailAgent()
+        connor  = DataAgent()
+        wade    = MarketingAgent()
         return "pass", (
             f"{sam.name} ({len(sam._definitions)} tools) · "
             f"{charlie.name} ({len(charlie._definitions)} tools) · "
-            f"{tristan.name} ({len(tristan._definitions)} tools)"
+            f"{tristan.name} ({len(tristan._definitions)} tools) · "
+            f"{connor.name} ({len(connor._definitions)} tools) · "
+            f"{wade.name} ({len(wade._definitions)} tools)"
         )
     except Exception as e:
         return "fail", str(e)[:100]

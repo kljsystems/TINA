@@ -8,17 +8,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import anthropic
 from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, SLACK_SAM_USER_ID, SLACK_KAI_USER_ID
 from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool
-from tina.agents.research import ResearchAgent
-from tina.agents.coding   import CodingAgent
-from tina.agents.email    import EmailAgent
-from tina.agents.data     import DataAgent
+from tina.agents.research  import ResearchAgent
+from tina.agents.coding    import CodingAgent
+from tina.agents.email     import EmailAgent
+from tina.agents.data      import DataAgent
+from tina.agents.marketing import MarketingAgent
 
 # ── Specialist agent registry ─────────────────────────────────────────────────
 _AGENTS: dict[str, type] = {
-    "research": ResearchAgent,
-    "coding":   CodingAgent,
-    "email":    EmailAgent,
-    "data":     DataAgent,
+    "research":  ResearchAgent,
+    "coding":    CodingAgent,
+    "email":     EmailAgent,
+    "data":      DataAgent,
+    "marketing": MarketingAgent,
 }
 
 # ── Direct tools (Tina handles herself without delegating) ────────────────────
@@ -49,8 +51,10 @@ _DELEGATE_TOOL = {
         "architecture decisions, explaining how code works, fixing bugs, choosing a library, "
         "setting up a project, technical how-to questions, or anything involving a programming language. "
         "When in doubt about whether something is code-related, send it to Sam. "
-        "Use 'data' (Morgan) for analysing CSV/Excel/JSON files, financial data, spreadsheets, "
+        "Use 'data' (Connor) for analysing CSV/Excel/JSON files, financial data, spreadsheets, "
         "statistics, generating charts, or any task involving structured data from local files. "
+        "Use 'marketing' (Wade) for social media content — drafting posts, video scripts, video ideas, "
+        "trend research, and posting to Facebook or Instagram. "
         "Write a clear task brief — include all relevant context, repo names, file paths, and what outcome is needed."
     ),
     "input_schema": {

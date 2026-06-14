@@ -28,6 +28,7 @@ from config import (
     SLACK_TRISTAN_BOT_TOKEN, SLACK_CHANNEL_TRISTAN, SLACK_TRISTAN_USER_ID,
     SLACK_CHARLIE_BOT_TOKEN, SLACK_CHARLIE_USER_ID,
     SLACK_CONNOR_BOT_TOKEN, SLACK_CHANNEL_CONNOR, SLACK_CONNOR_USER_ID,
+    SLACK_WADE_BOT_TOKEN, SLACK_CHANNEL_WADE, SLACK_WADE_USER_ID,
 )
 from tina.agent import TinaAgent
 
@@ -96,7 +97,8 @@ _AGENT_META = {
     "research": {"display": "Charlie",  "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH, "token": SLACK_CHARLIE_BOT_TOKEN  or None},
     "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM,      "token": SLACK_SAM_BOT_TOKEN      or None},
     "email":    {"display": "Tristan",  "color": "#f59e0b", "glow": "#fcd34d", "channel": SLACK_CHANNEL_TRISTAN,  "token": SLACK_TRISTAN_BOT_TOKEN  or None},
-    "data":     {"display": "Connor",   "color": "#8b5cf6", "glow": "#c4b5fd", "channel": SLACK_CHANNEL_CONNOR,   "token": SLACK_CONNOR_BOT_TOKEN   or None},
+    "data":      {"display": "Connor",  "color": "#8b5cf6", "glow": "#c4b5fd", "channel": SLACK_CHANNEL_CONNOR,   "token": SLACK_CONNOR_BOT_TOKEN   or None},
+    "marketing": {"display": "Wade",   "color": "#ec4899", "glow": "#f9a8d4", "channel": SLACK_CHANNEL_WADE,     "token": SLACK_WADE_BOT_TOKEN     or None},
 }
 
 # Channel → agent key, for routing direct Slack messages to the right agent
@@ -105,6 +107,7 @@ _CHANNEL_TO_AGENT = {
     SLACK_CHANNEL_RESEARCH: "research",
     SLACK_CHANNEL_TRISTAN:  "email",
     SLACK_CHANNEL_CONNOR:   "data",
+    SLACK_CHANNEL_WADE:     "marketing",
 }
 
 # Slack user ID → agent key, for routing @mentions in #agents group chat
@@ -461,6 +464,7 @@ _AGENT_PERSONAS = {
     "Charlie": "You are Charlie — a thorough, curious research agent who is precise about sources.",
     "Tristan": "You are Tristan — a precise, professional email agent. You are measured and clear, never casual.",
     "Connor":  "You are Connor — an analytical data agent who is direct and numbers-focused.",
+    "Wade":    "You are Wade — a creative, strategic marketing agent who is energetic and trend-savvy.",
 }
 
 def _agent_persona(display: str) -> str:
@@ -647,10 +651,11 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
 
     # Build @mention for whichever agent is running (not always Sam)
     _agent_uid   = {
-        "coding":   SLACK_SAM_USER_ID,
-        "research": SLACK_CHARLIE_USER_ID,
-        "email":    SLACK_TRISTAN_USER_ID,
-        "data":     SLACK_CONNOR_USER_ID,
+        "coding":    SLACK_SAM_USER_ID,
+        "research":  SLACK_CHARLIE_USER_ID,
+        "email":     SLACK_TRISTAN_USER_ID,
+        "data":      SLACK_CONNOR_USER_ID,
+        "marketing": SLACK_WADE_USER_ID,
     }.get(agent_key, "")
     sam_mention   = f"<@{SLACK_SAM_USER_ID}>"  if SLACK_SAM_USER_ID  else "@Sam"
     agent_mention = f"<@{_agent_uid}>"          if _agent_uid          else f"@{display}"
