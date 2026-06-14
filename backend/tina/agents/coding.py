@@ -86,6 +86,13 @@ Rules:
 - Never write placeholder comments like "add logic here" — implement it or say why you can't.
 - Confirm the path before writing. Wrong directory = file in the wrong place.
 
+DEPENDENCY INSTALLS
+When a task requires a Python or Node package that isn't already installed:
+1. Add it to requirements.txt (pip) or package.json (npm) with fs_write
+2. Call open_terminal with the exact install command (e.g. "pip install pandas openpyxl") and the directory (TINA root for pip, frontend/ for npm)
+3. Tell Ky what the terminal is for — it will open on his screen with the command highlighted
+4. Do NOT call restart_backend until Ky has confirmed the install is done
+
 SEARCH AND RESEARCH
 You have direct search access via the search tool — use it first for quick lookups:
 - Package documentation, API references, error messages → search directly
@@ -121,7 +128,8 @@ TOOLS YOU HAVE
 - git_branch / git_checkout: create and switch branches
 - git_push: push current branch to remote (refused on main — use a feature branch)
 - take_screenshot: capture the screen as an image you can actually see — use to inspect the dashboard UI, verify layout changes, or check browser error states
-- lint_files: run flake8 (+ optional mypy) on Python files after writing them — always lint before restarting or committing"""
+- lint_files: run flake8 (+ optional mypy) on Python files after writing them — always lint before restarting or committing
+- open_terminal: open a terminal on Ky's screen in the right directory when a new dependency needs installing. ALWAYS use this instead of asking Ky to open a terminal himself. Before calling it: (1) update requirements.txt or package.json with the new dependency, (2) call open_terminal with the exact install command and a reason. Ky will see the command highlighted in yellow and just needs to press Enter."""
 
     allow_delegation = True
     tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool, system_tool, test_tool, git_tool, screenshot_tool, lint_tool]

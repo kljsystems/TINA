@@ -60,6 +60,34 @@ DEFINITIONS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "open_terminal",
+        "description": (
+            "Open a new terminal window in the specified directory so Ky can run a command — "
+            "typically pip install or npm install when a new dependency is needed. "
+            "The terminal opens with the command printed prominently so Ky just has to type it and press Enter. "
+            "Always call this instead of asking Ky to open a terminal himself. "
+            "Also update requirements.txt or package.json yourself before calling this."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type":        "string",
+                    "description": "The exact command Ky needs to run, e.g. 'pip install pandas openpyxl'.",
+                },
+                "directory": {
+                    "type":        "string",
+                    "description": "Absolute path to open the terminal in. Defaults to TINA root if omitted.",
+                },
+                "reason": {
+                    "type":        "string",
+                    "description": "Why this package is needed — shown in the terminal so Ky has context.",
+                },
+            },
+            "required": ["command"],
+        },
+    },
+    {
         "name": "set_ui_pref",
         "description": (
             "Show or hide a dashboard UI element. Persisted to disk so the setting survives restarts. "
@@ -117,6 +145,77 @@ def handle(name: str, inputs: dict) -> str:
         if os.path.exists(RESTART_FLAG):
             return "Restart is still in progress — the flag file hasn't been consumed yet."
         return "No pending restart flag. Backend should be running normally."
+
+    if name == "open_terminal":
+        import subprocess
+        command   = inputs.get("command", "")
+        directory = inputs.get("directory", BASE_DIR)
+        reason    = inputs.get("reason", "")
+
+        if not os.path.isdir(directory):
+            directory = BASE_DIR
+
+        # PowerShell startup script: print the command clearly, then stay open
+        reason_line = f"Write-Host '  Reason : {reason}' -ForegroundColor DarkGray; " if reason else ""
+        ps_init = (
+            "Write-Host ''; "
+            "Write-Host '  TINA needs you to run this command:' -ForegroundColor Cyan; "
+            f"{reason_line}"
+            "Write-Host ''; "
+            f"Write-Host '  {command}' -ForegroundColor Yellow; "
+            "Write-Host ''; "
+            "Write-Host '  Copy the line above, paste it here, and press Enter.' -ForegroundColor DarkGray; "
+            "Write-Host '  When done, you can close this window.' -ForegroundColor DarkGray; "
+            "Write-Host ''"
+        )
+
+        launched = False
+
+        # Try Windows Terminal (wt.exe) — available on Windows 10/11
+        try:
+            subprocess.Popen(
+                ["wt.exe", "-d", directory, "--title", f"TINA — {command}",
+                 "powershell.exe", "-NoExit", "-Command", ps_init],
+                creationflags=subprocess.DETACHED_PROCESS,
+            )
+            launched = True
+        except FileNotFoundError:
+            pass
+
+        # Fall back to a plain PowerShell window
+        if not launched:
+            try:
+                subprocess.Popen(
+                    ["powershell.exe", "-NoExit", "-Command",
+                     f"Set-Location '{directory}'; {ps_init}"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+                launched = True
+            except FileNotFoundError:
+                pass
+
+        # Last resort: cmd
+        if not launched:
+            try:
+                subprocess.Popen(
+                    ["cmd.exe", "/K", f"cd /d \"{directory}\" && echo Run: {command}"],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                )
+                launched = True
+            except FileNotFoundError:
+                pass
+
+        if not launched:
+            return (
+                f"Could not open a terminal automatically. "
+                f"Please open a terminal in {directory} and run:\n\n  {command}"
+            )
+
+        return (
+            f"Terminal opened in {directory}.\n"
+            f"Command for Ky to run:  {command}\n"
+            f"{('Reason: ' + reason) if reason else ''}"
+        ).strip()
 
     if name == "set_ui_pref":
         import json as _json
