@@ -39,7 +39,10 @@ except Exception:
     MS_GRAPH_TOKEN_FILE      = os.getenv("MS_GRAPH_TOKEN_FILE", "")
     OUTLOOK_SENDER           = os.getenv("OUTLOOK_SENDER", "kydan@kljsystems.com.au")
 
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/contacts.readonly",
+]
 
 # account key → (provider, display address)
 _ACCOUNTS = {
@@ -49,6 +52,24 @@ _ACCOUNTS = {
 }
 
 DEFINITIONS = [
+    {
+        "name": "contacts_search",
+        "description": (
+            "Search Ky's Google Contacts by name (or partial name) to look up an email address. "
+            "Always call this BEFORE asking Ky for someone's email — if the contact exists you'll "
+            "find it here. Returns name, email(s), and phone if available."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Name or partial name to search for (e.g. 'John', 'Smith', 'Dr Brown').",
+                },
+            },
+            "required": ["query"],
+        },
+    },
     {
         "name": "email_list",
         "description": (
@@ -318,6 +339,97 @@ def _send_outlook(sender: str, inputs: dict) -> str:
     return f"Email sent from {sender} to {inputs['to']} via Outlook/Graph."
 
 
+# ── Contacts ─────────────────────────────────────────────────────────────────
+
+def _gmail_contacts(token_path: str, query: str) -> list[dict]:
+    """Search one Gmail account's contacts. Returns list of {name, emails, phones}."""
+    if not token_path or not os.path.exists(token_path):
+        return []
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        creds = Credentials.from_authorized_user_file(token_path, GMAIL_SCOPES)
+        if not creds.valid and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        service = build("people", "v1", credentials=creds)
+        result  = service.people().searchContacts(
+            query=query,
+            readMask="names,emailAddresses,phoneNumbers",
+            pageSize=5,
+        ).execute()
+        contacts = []
+        for c in result.get("results", []):
+            p      = c.get("person", {})
+            names  = p.get("names", [])
+            name   = names[0].get("displayName", "") if names else ""
+            emails = [e["value"] for e in p.get("emailAddresses", [])]
+            phones = [ph["value"] for ph in p.get("phoneNumbers", [])]
+            if name or emails:
+                contacts.append({"name": name, "emails": emails, "phones": phones})
+        return contacts
+    except Exception:
+        return []
+
+
+def _outlook_contacts(query: str) -> list[dict]:
+    """Search Outlook/Microsoft 365 contacts via Graph people endpoint."""
+    try:
+        import requests
+        token = _graph_token()
+        resp  = requests.get(
+            f"https://graph.microsoft.com/v1.0/users/{OUTLOOK_SENDER}/people",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "$search": query,
+                "$select": "displayName,scoredEmailAddresses,phones",
+                "$top": 5,
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        contacts = []
+        for p in resp.json().get("value", []):
+            name   = p.get("displayName", "")
+            emails = [e["address"] for e in p.get("scoredEmailAddresses", []) if e.get("address")]
+            phones = [ph["number"] for ph in p.get("phones", []) if ph.get("number")]
+            if name or emails:
+                contacts.append({"name": name, "emails": emails, "phones": phones})
+        return contacts
+    except Exception:
+        return []
+
+
+def _contacts_search(query: str) -> str:
+    """Search all three contact sources, merge, deduplicate by email."""
+    results = []
+    results += _gmail_contacts(GMAIL_PERSONAL_TOKEN,  query)
+    results += _gmail_contacts(GMAIL_BUSINESS_TOKEN,  query)
+    results += _outlook_contacts(query)
+
+    # Deduplicate by first email address
+    seen, merged = set(), []
+    for c in results:
+        key = c["emails"][0].lower() if c["emails"] else c["name"].lower()
+        if key not in seen:
+            seen.add(key)
+            merged.append(c)
+
+    if not merged:
+        return f"No contacts found matching '{query}'."
+
+    lines = []
+    for c in merged:
+        line = c["name"] or "(no name)"
+        if c["emails"]:
+            line += f" — {', '.join(c['emails'])}"
+        if c["phones"]:
+            line += f" · {c['phones'][0]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 # ── Gmail read helpers ────────────────────────────────────────────────────────
 
 def _decode_gmail_body(payload: dict) -> str:
@@ -560,6 +672,12 @@ def handle(name: str, inputs: dict) -> str:
         lines.append("Routing: personal mail → personal; business mail → business_outlook (default); "
                      "business_gmail only on explicit request.")
         return "\n".join(lines)
+
+    if name == "contacts_search":
+        try:
+            return _contacts_search(inputs.get("query", ""))
+        except Exception as e:
+            return f"contacts_search error: {e}"
 
     if name == "email_list":
         account = inputs.get("account", "")

@@ -18,7 +18,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/contacts.readonly",
+]
 
 TOKEN_MAP = {
     "personal": ("data/gmail_personal_token.json",  "kydanjenkins04@gmail.com"),

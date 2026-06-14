@@ -456,17 +456,28 @@ async def _should_escalate_to_kai(question: str) -> bool:
         return False  # default to auto on error
 
 
-async def _sam_acknowledgment(task: str) -> str:
-    """Quick Sam-style 'on it' reply before work starts."""
+_AGENT_PERSONAS = {
+    "Sam":     "You are Sam — a dry, goofy but technically sharp coding agent.",
+    "Charlie": "You are Charlie — a thorough, curious research agent who is precise about sources.",
+    "Tristan": "You are Tristan — a precise, professional email agent. You are measured and clear, never casual.",
+    "Connor":  "You are Connor — an analytical data agent who is direct and numbers-focused.",
+}
+
+def _agent_persona(display: str) -> str:
+    return _AGENT_PERSONAS.get(display, f"You are {display}, a specialist AI agent.")
+
+
+async def _sam_acknowledgment(task: str, display: str = "Sam") -> str:
+    """Agent 'on it' reply before work starts."""
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=50,
             system=(
-                "You are Sam — a dry, goofy but technically sharp coding agent. "
+                f"{_agent_persona(display)} "
                 "Write a single short acknowledgment (under 15 words) that you're starting the task. "
-                "Be natural, slightly dry. No preamble. No sign-off."
+                "Be natural, in character. No preamble. No sign-off."
             ),
             messages=[{"role": "user", "content": f"Task: {task[:150]}"}],
         )
@@ -475,18 +486,18 @@ async def _sam_acknowledgment(task: str) -> str:
         return "On it."
 
 
-async def _sam_completion_msg(task: str, result: str, tina_mention: str) -> str:
-    """Sam's natural '@Tina done' completion message."""
+async def _sam_completion_msg(task: str, result: str, tina_mention: str, display: str = "Sam") -> str:
+    """Agent '@Tina done' completion message."""
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=80,
             system=(
-                "You are Sam — a dry, goofy but technically sharp coding agent. "
+                f"{_agent_persona(display)} "
                 f"Write a short completion message starting with '{tina_mention}' (max 25 words). "
-                "Say you're done and mention specifically what you built or changed (file names, key outcomes). "
-                "Dry, natural tone. No preamble."
+                "Say you're done and mention specifically what was completed (key outcomes, recipients, file names, etc.). "
+                "In character. No preamble."
             ),
             messages=[{"role": "user", "content": f"Task: {task[:100]}\nResult: {result[:400]}"}],
         )
@@ -544,16 +555,17 @@ async def _agent_verify_response(display: str, task: str, result: str) -> tuple[
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
             system=(
-                f"You are {display}, a specialist AI agent. Tina has asked you to verify your work "
-                "before she reports it to Ky.\n\n"
-                "Assess the task and result honestly — look for errors, connection failures, "
-                "incomplete outputs, or missing files.\n\n"
-                'Respond with JSON only: {"completed": true/false, "message": "your natural 1-2 sentence reply to Tina"}\n\n'
-                "If completed: confirm what was actually produced (file names, key outputs).\n"
-                "If failed or partial: explain exactly what went wrong and what's missing.\n"
-                "Be direct. No preamble."
+                "You are a task-completion auditor for an AI assistant system. "
+                "You will be given a task brief and the output log produced by a specialist agent that ran it. "
+                "Your job is to assess whether the output log shows the task was completed successfully.\n\n"
+                "Look for: explicit success confirmation, expected outputs present, no error messages, "
+                "no 'failed', 'unable', 'could not', or 'timed out' in the log tail.\n\n"
+                'Respond with JSON only: {"completed": true/false, "message": "1-2 sentence summary for Tina"}\n\n'
+                "If completed: state what the log confirms was done (recipients, files, outcomes).\n"
+                "If failed or partial: state what the log shows went wrong.\n"
+                "Do NOT question whether the actions were possible — trust the log. Be direct. No preamble."
             ),
-            messages=[{"role": "user", "content": f"Task: {task[:400]}\n\nMy result: {result[:600]}"}],
+            messages=[{"role": "user", "content": f"Task brief: {task[:400]}\n\nAgent output log: {result[:600]}"}],
         )
         text = next((b.text for b in resp.content if hasattr(b, "text")), "")
         match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -633,9 +645,17 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
     agent_token = meta.get("token")
     tina_token  = SLACK_TINA_BOT_TOKEN
 
-    sam_mention  = f"<@{SLACK_SAM_USER_ID}>"  if SLACK_SAM_USER_ID  else "@Sam"
-    tina_mention = f"<@{SLACK_TINA_USER_ID}>" if SLACK_TINA_USER_ID else "@Tina"
-    kai_mention  = f"<@{SLACK_KAI_USER_ID}>"  if SLACK_KAI_USER_ID  else "@Ky"
+    # Build @mention for whichever agent is running (not always Sam)
+    _agent_uid   = {
+        "coding":   SLACK_SAM_USER_ID,
+        "research": SLACK_CHARLIE_USER_ID,
+        "email":    SLACK_TRISTAN_USER_ID,
+        "data":     SLACK_CONNOR_USER_ID,
+    }.get(agent_key, "")
+    sam_mention   = f"<@{SLACK_SAM_USER_ID}>"  if SLACK_SAM_USER_ID  else "@Sam"
+    agent_mention = f"<@{_agent_uid}>"          if _agent_uid          else f"@{display}"
+    tina_mention  = f"<@{SLACK_TINA_USER_ID}>" if SLACK_TINA_USER_ID else "@Tina"
+    kai_mention   = f"<@{SLACK_KAI_USER_ID}>"  if SLACK_KAI_USER_ID  else "@Ky"
 
     async def tracking_on_tool(name: str, inputs: dict = None):
         record_tool(agent_key, name, summarize_input(name, inputs or {}))
@@ -704,10 +724,10 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
     try:
         if not retried:
             # Step 1 — Tina @mentions the agent with the task brief
-            await _slack_post(channel, f"{sam_mention}\n\n{task}", token=tina_token)
+            await _slack_post(channel, f"{agent_mention}\n\n{task}", token=tina_token)
 
             # Step 2 — Agent acknowledges before starting work
-            ack = await _sam_acknowledgment(task)
+            ack = await _sam_acknowledgment(task, display)
             await _slack_post(channel, ack, token=agent_token)
 
         start_task(agent_key, task)
@@ -718,7 +738,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
         print(f"[{display}] background task complete ({len(result)} chars)")
 
         # Step 3 — Agent @mentions Tina with a natural completion summary, then posts the full output
-        completion_msg = await _sam_completion_msg(task, result, tina_mention)
+        completion_msg = await _sam_completion_msg(task, result, tina_mention, display)
         full_output = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
         await _slack_post(channel, completion_msg, token=agent_token)
         await _slack_post(channel, full_output, token=agent_token)
@@ -726,7 +746,7 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
         # Step 3b — Tina asks the agent to verify before reporting to Ky
         await _slack_post(
             channel,
-            f"{sam_mention} Before I tell Ky — did that complete fully? Any issues I should flag?",
+            f"{agent_mention} Before I tell Ky — did that complete fully? Any issues I should flag?",
             token=tina_token,
         )
         completed, verify_msg = await _agent_verify_response(display, task, result)

@@ -3,68 +3,16 @@ import { useRef, useCallback, useEffect } from 'react'
 const P  = '#8B5CF6'
 const PG = '#A78BFA'
 
-// Target values per state — lerped toward each frame
 export const STATE_CFG = {
-  listening:   { label: 'READY',       sub: 'Awaiting input',      rotSpeed: 0.18, nodeGlow: 0.42, connAlpha: 0.16, pulseAmp: 0.06, speakAmp: 0,   thinkAmp: 0,   glow: 0.38, breathSpeed: 0.5  },
-  thinking:    { label: 'PROCESSING',  sub: 'Analysing request',   rotSpeed: 0.90, nodeGlow: 0.74, connAlpha: 0.38, pulseAmp: 0.22, speakAmp: 0,   thinkAmp: 1.0, glow: 0.65, breathSpeed: 1.2  },
-  speaking:    { label: 'RESPONDING',  sub: 'Transmitting...',     rotSpeed: 0.38, nodeGlow: 0.88, connAlpha: 0.44, pulseAmp: 0.28, speakAmp: 1.0, thinkAmp: 0,   glow: 0.85, breathSpeed: 1.8  },
-  standby:     { label: 'STANDBY',     sub: 'System idle',         rotSpeed: 0.06, nodeGlow: 0.14, connAlpha: 0.05, pulseAmp: 0.02, speakAmp: 0,   thinkAmp: 0,   glow: 0.13, breathSpeed: 0.3  },
-  offline:     { label: 'OFFLINE',     sub: 'No connection',       rotSpeed: 0.03, nodeGlow: 0.07, connAlpha: 0.02, pulseAmp: 0,   speakAmp: 0,   thinkAmp: 0,   glow: 0.07, breathSpeed: 0.2  },
-  diagnostics: { label: 'DIAGNOSTICS', sub: 'Running system scan', rotSpeed: 0.65, nodeGlow: 0.62, connAlpha: 0.30, pulseAmp: 0.18, speakAmp: 0.3, thinkAmp: 0.5, glow: 0.58, breathSpeed: 1.0  },
+  listening:   { label: 'READY',       sub: 'Awaiting input',      irisScale: 0.82, pupilSize: 0.30, ringSpeed: 0.28, glow: 0.50, pulseAmp: 0.04, scanAmp: 0,   breathSpeed: 0.5  },
+  thinking:    { label: 'PROCESSING',  sub: 'Analysing request',   irisScale: 1.00, pupilSize: 0.50, ringSpeed: 1.50, glow: 0.80, pulseAmp: 0.09, scanAmp: 1.0, breathSpeed: 1.3  },
+  speaking:    { label: 'RESPONDING',  sub: 'Transmitting...',     irisScale: 1.00, pupilSize: 0.38, ringSpeed: 0.60, glow: 0.92, pulseAmp: 0.13, scanAmp: 0,   breathSpeed: 1.9  },
+  standby:     { label: 'STANDBY',     sub: 'System idle',         irisScale: 0.55, pupilSize: 0.22, ringSpeed: 0.07, glow: 0.18, pulseAmp: 0.01, scanAmp: 0,   breathSpeed: 0.25 },
+  offline:     { label: 'OFFLINE',     sub: 'No connection',       irisScale: 0.35, pupilSize: 0.16, ringSpeed: 0.02, glow: 0.06, pulseAmp: 0,    scanAmp: 0,   breathSpeed: 0.15 },
+  diagnostics: { label: 'DIAGNOSTICS', sub: 'Running system scan', irisScale: 1.00, pupilSize: 0.55, ringSpeed: 2.20, glow: 0.84, pulseAmp: 0.16, scanAmp: 0.8, breathSpeed: 1.1  },
 }
 
-// ── Sphere geometry (seeded random to stay stable across renders) ─────────────
-
-function seededRand(seed) {
-  let s = seed
-  return () => { s = (s * 16807 + 0) % 2147483647; return (s - 1) / 2147483646 }
-}
-
-function buildGeometry() {
-  const rand = seededRand(42)
-  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
-  const N = 72
-
-  // Fibonacci sphere distribution
-  const nodes = Array.from({ length: N }, (_, i) => {
-    const y = 1 - (i / (N - 1)) * 2
-    const r = Math.sqrt(Math.max(0, 1 - y * y))
-    const t = goldenAngle * i
-    return { x: Math.cos(t) * r, y, z: Math.sin(t) * r, phase: rand() * Math.PI * 2, isEye: false }
-  })
-
-  // Two eye nodes — slightly above equator, facing forward
-  const rawEyes = [
-    { x: -0.42, y: 0.36, z: 0.84 },
-    { x:  0.42, y: 0.36, z: 0.84 },
-  ]
-  rawEyes.forEach(e => {
-    const len = Math.sqrt(e.x ** 2 + e.y ** 2 + e.z ** 2)
-    nodes.push({ x: e.x / len, y: e.y / len, z: e.z / len, phase: rand() * Math.PI * 2, isEye: true })
-  })
-
-  // Nearest-neighbour connections (k=3 per node, deduplicated)
-  const seen = new Set()
-  const connections = []
-  nodes.forEach((n, i) => {
-    nodes
-      .map((m, j) => ({ j, d: (n.x - m.x) ** 2 + (n.y - m.y) ** 2 + (n.z - m.z) ** 2 }))
-      .filter(({ j }) => j !== i)
-      .sort((a, b) => a.d - b.d)
-      .slice(0, 3)
-      .forEach(({ j }) => {
-        const key = i < j ? `${i}-${j}` : `${j}-${i}`
-        if (!seen.has(key)) { seen.add(key); connections.push([i, j]) }
-      })
-  })
-
-  return { nodes, connections }
-}
-
-// Geometry is fixed — computed once at module load, no rerenders
-const GEOMETRY = buildGeometry()
-
-// ── RAF helper ────────────────────────────────────────────────────────────────
+function lerp(a, b, t) { return a + (b - a) * t }
 
 function useRAF(cb) {
   const rafRef  = useRef()
@@ -80,31 +28,24 @@ function useRAF(cb) {
   }, [cb])
 }
 
-function lerp(a, b, t) { return a + (b - a) * t }
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-export default function TinaFace({ state = 'listening', size = 420, ringColor = PG, glowColor = P }) {
+export default function TinaFace({ state = 'listening', size = 320 }) {
   const canvasRef  = useRef()
-  const rotY       = useRef(0)
-  const wavePhase  = useRef(0)
   const time       = useRef(0)
-
-  const { nodes, connections } = GEOMETRY
+  const scanX      = useRef(-1.2)
+  const ringAngles = useRef([0, 0, 0, 0])
 
   const live = useRef({
-    rotSpeed:    STATE_CFG.listening.rotSpeed,
-    nodeGlow:    STATE_CFG.listening.nodeGlow,
-    connAlpha:   STATE_CFG.listening.connAlpha,
-    pulseAmp:    STATE_CFG.listening.pulseAmp,
-    speakAmp:    STATE_CFG.listening.speakAmp,
-    thinkAmp:    STATE_CFG.listening.thinkAmp,
+    irisScale:   STATE_CFG.listening.irisScale,
+    pupilSize:   STATE_CFG.listening.pupilSize,
+    ringSpeed:   STATE_CFG.listening.ringSpeed,
     glow:        STATE_CFG.listening.glow,
+    pulseAmp:    STATE_CFG.listening.pulseAmp,
+    scanAmp:     STATE_CFG.listening.scanAmp,
     breathSpeed: STATE_CFG.listening.breathSpeed,
   })
 
-  const sc  = size / 320
   const cfg = STATE_CFG[state] ?? STATE_CFG.listening
+  const sc  = size / 320
 
   useRAF(useCallback((deltaMs) => {
     const c = canvasRef.current
@@ -114,143 +55,162 @@ export default function TinaFace({ state = 'listening', size = 420, ringColor = 
     const cy  = c.height / 2
     const dt  = Math.min(deltaMs / 1000, 0.05)
 
-    time.current      += dt
-    wavePhase.current += dt * (0.9 + live.current.speakAmp * 1.6)
+    time.current += dt
 
-    // Lerp live values toward current state target
-    const α  = Math.min(1, dt * 3)
+    const α  = Math.min(1, dt * 2.8)
     const lv = live.current
-    lv.rotSpeed    = lerp(lv.rotSpeed,    cfg.rotSpeed,    α)
-    lv.nodeGlow    = lerp(lv.nodeGlow,    cfg.nodeGlow,    α)
-    lv.connAlpha   = lerp(lv.connAlpha,   cfg.connAlpha,   α)
-    lv.pulseAmp    = lerp(lv.pulseAmp,    cfg.pulseAmp,    α)
-    lv.speakAmp    = lerp(lv.speakAmp,    cfg.speakAmp,    α)
-    lv.thinkAmp    = lerp(lv.thinkAmp,    cfg.thinkAmp,    α)
+    lv.irisScale   = lerp(lv.irisScale,   cfg.irisScale,   α)
+    lv.pupilSize   = lerp(lv.pupilSize,   cfg.pupilSize,   α)
+    lv.ringSpeed   = lerp(lv.ringSpeed,   cfg.ringSpeed,   α)
     lv.glow        = lerp(lv.glow,        cfg.glow,        α)
+    lv.pulseAmp    = lerp(lv.pulseAmp,    cfg.pulseAmp,    α)
+    lv.scanAmp     = lerp(lv.scanAmp,     cfg.scanAmp,     α)
     lv.breathSpeed = lerp(lv.breathSpeed, cfg.breathSpeed, α)
 
-    rotY.current += lv.rotSpeed * dt
+    if (lv.scanAmp > 0.05) {
+      scanX.current += dt * lv.ringSpeed * 1.6
+      if (scanX.current > 1.2) scanX.current = -1.2
+    }
 
-    // X-axis tilt — organic sway + thinking wobble
-    const rotX = Math.sin(time.current * 0.38) * 0.15
-               + lv.thinkAmp * Math.sin(time.current * 1.85) * 0.28
-
-    const cosY = Math.cos(rotY.current), sinY = Math.sin(rotY.current)
-    const cosX = Math.cos(rotX),         sinX = Math.sin(rotX)
-
-    const sr = 116 * sc  // sphere radius in pixels
-
-    // ── Project all nodes ─────────────────────────────────────────────────────
-    const projected = nodes.map(n => {
-      // Rotate around Y axis
-      const x1 =  n.x * cosY - n.z * sinY
-      const z1 =  n.x * sinY + n.z * cosY
-      // Rotate around X axis
-      const y2 =  n.y * cosX - z1 * sinX
-      const z2 =  n.y * sinX + z1 * cosX
-
-      // Soft perspective projection
-      const persp = 2.8
-      const fov   = persp / (persp + z2 + 1)
-      const px    = cx + x1 * sr * persp * fov
-      const py    = cy - y2 * sr * persp * fov
-
-      // Depth: 0 = furthest back, 1 = closest front
-      const depth = (z2 + 1) / 2
-
-      // Speaking wave: latitude bands ripple bottom→top
-      const speakWave = lv.speakAmp > 0.01
-        ? Math.max(0, Math.sin(wavePhase.current * 2.4 - n.y * Math.PI * 2.6))
-        : 0
-
-      // Thinking scan: a plane sweeps left→right through the sphere
-      const scanX     = Math.sin(time.current * 2.2)
-      const scanBoost = lv.thinkAmp * Math.max(0, 1 - Math.abs(x1 - scanX * 0.85) / 0.20) * 0.75
-
-      return { px, py, depth, speakWave, scanBoost, n }
-    })
+    const ra = ringAngles.current
+    ra[0] += dt * lv.ringSpeed * 0.70
+    ra[1] -= dt * lv.ringSpeed * 0.45
+    ra[2] += dt * lv.ringSpeed * 0.28
+    ra[3] -= dt * lv.ringSpeed * 0.16
 
     ctx.clearRect(0, 0, c.width, c.height)
 
-    // ── Connections ───────────────────────────────────────────────────────────
-    ctx.lineWidth = 0.85 * sc
-    connections.forEach(([i, j]) => {
-      const a = projected[i]
-      const b = projected[j]
-      const avgDepth = (a.depth + b.depth) / 2
-      if (avgDepth < 0.08) return
+    const breathe  = 1 + lv.pulseAmp * Math.sin(time.current * lv.breathSpeed * 2.4)
+    const irisR    = 88 * sc * lv.irisScale
 
-      const speakBoost = (a.speakWave + b.speakWave) * 0.5
-      const thinkBoost = (a.scanBoost + b.scanBoost) * 0.5
-      const alpha = lv.connAlpha * avgDepth * (0.45 + 0.55 * avgDepth)
-                  + speakBoost * 0.13 * lv.speakAmp
-                  + thinkBoost * 0.10
+    // ── Outer segmented rings ─────────────────────────────────────────────────
+    const RINGS = [
+      { ri: 0, r: 148, dashes: 52, gapFrac: 0.10, alpha: 0.10, lw: 0.7 },
+      { ri: 1, r: 134, dashes: 28, gapFrac: 0.18, alpha: 0.18, lw: 0.9 },
+      { ri: 2, r: 120, dashes: 18, gapFrac: 0.26, alpha: 0.28, lw: 1.1 },
+      { ri: 3, r: 108, dashes: 12, gapFrac: 0.34, alpha: 0.38, lw: 1.0 },
+    ]
 
-      if (alpha < 0.005) return
-
-      ctx.beginPath()
-      ctx.moveTo(a.px, a.py)
-      ctx.lineTo(b.px, b.py)
-      ctx.strokeStyle = ringColor
-      ctx.globalAlpha = Math.min(0.85, alpha)
-      ctx.shadowColor = glowColor
-      ctx.shadowBlur  = avgDepth > 0.72 && (speakBoost > 0.35 || thinkBoost > 0.3) ? 7 : 0
-      ctx.stroke()
+    RINGS.forEach(({ ri, r, dashes, gapFrac, alpha, lw }) => {
+      const angle  = ra[ri]
+      const arcLen = (Math.PI * 2) / dashes
+      const gapLen = arcLen * gapFrac
+      ctx.lineWidth   = lw * sc
+      ctx.strokeStyle = PG
+      ctx.shadowColor = P
+      ctx.shadowBlur  = 5 * lv.glow
+      for (let i = 0; i < dashes; i++) {
+        const a0 = angle + i * arcLen
+        const a1 = a0 + arcLen - gapLen
+        ctx.globalAlpha = alpha * lv.glow * breathe
+        ctx.beginPath()
+        ctx.arc(cx, cy, r * sc * breathe, a0, a1)
+        ctx.stroke()
+      }
     })
     ctx.globalAlpha = 1
     ctx.shadowBlur  = 0
 
-    // ── Nodes (back → front) ──────────────────────────────────────────────────
-    const sorted = [...projected].sort((a, b) => a.depth - b.depth)
-
-    sorted.forEach(({ px, py, depth, speakWave, scanBoost, n }) => {
-      const pulse     = 1 + lv.pulseAmp * Math.sin(time.current * lv.breathSpeed * 2.3 + n.phase)
-      const speakMult = 1 + speakWave * 0.7 * lv.speakAmp
-      const thinkMult = 1 + scanBoost * 0.6
-      const eyeMult   = n.isEye ? 2.6 : 1.0
-
-      const baseR = 3.0 * sc
-      const r     = baseR * (0.32 + 0.68 * depth) * pulse * speakMult * eyeMult
-      const alpha = lv.nodeGlow * (0.15 + 0.85 * depth) * pulse * speakMult * thinkMult
-                  * (n.isEye ? 1.5 : 1.0)
-
-      ctx.beginPath()
-      ctx.arc(px, py, r, 0, Math.PI * 2)
-      ctx.fillStyle   = ringColor
-      ctx.globalAlpha = Math.min(0.98, alpha)
-      ctx.shadowColor = glowColor
-      ctx.shadowBlur  = depth > 0.62
-        ? (n.isEye ? 18 : 9) * depth * (1 + speakWave * lv.speakAmp)
-        : 0
-      ctx.fill()
-    })
-    ctx.globalAlpha = 1
-    ctx.shadowBlur  = 0
-
-    // ── Centre glow ───────────────────────────────────────────────────────────
-    const heartbeat = 1
-      + 0.035 * Math.sin(time.current * 1.4)
-      + 0.012 * Math.sin(time.current * 2.85)
-      + (lv.speakAmp > 0.1 ? 0.048 * Math.sin(time.current * 5.1) : 0)
-
-    const cR   = 34 * sc * lv.glow * heartbeat
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cR * 1.6)
-    const hex  = v => Math.round(Math.min(1, v) * 255).toString(16).padStart(2, '0')
-    grad.addColorStop(0,    glowColor + hex(lv.glow))
-    grad.addColorStop(0.45, glowColor + hex(lv.glow * 0.48))
-    grad.addColorStop(1,    glowColor + '00')
-
+    // ── Iris ambient fill ─────────────────────────────────────────────────────
+    const irisGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, irisR)
+    irisGrad.addColorStop(0,   P + '00')
+    irisGrad.addColorStop(0.6, P + Math.round(lv.glow * 0.07 * 255).toString(16).padStart(2, '0'))
+    irisGrad.addColorStop(1,   P + Math.round(lv.glow * 0.22 * 255).toString(16).padStart(2, '0'))
     ctx.beginPath()
-    ctx.arc(cx, cy, cR, 0, Math.PI * 2)
-    ctx.fillStyle   = grad
-    ctx.shadowColor = glowColor
-    ctx.shadowBlur  = 28 * lv.glow
+    ctx.arc(cx, cy, irisR, 0, Math.PI * 2)
+    ctx.fillStyle   = irisGrad
+    ctx.globalAlpha = 0.9
+    ctx.fill()
+    ctx.globalAlpha = 1
+
+    // ── Iris concentric rings ─────────────────────────────────────────────────
+    const IRIS = [
+      { rFrac: 1.00, lw: 1.0, alpha: 0.20, color: PG },
+      { rFrac: 0.78, lw: 0.8, alpha: 0.28, color: PG },
+      { rFrac: 0.58, lw: 0.7, alpha: 0.36, color: P  },
+      { rFrac: 0.40, lw: 0.6, alpha: 0.44, color: P  },
+    ]
+    IRIS.forEach(({ rFrac, lw, alpha, color }) => {
+      ctx.beginPath()
+      ctx.arc(cx, cy, irisR * rFrac, 0, Math.PI * 2)
+      ctx.lineWidth   = lw * sc
+      ctx.strokeStyle = color
+      ctx.globalAlpha = alpha * lv.glow
+      ctx.shadowColor = P
+      ctx.shadowBlur  = 5
+      ctx.stroke()
+      ctx.shadowBlur  = 0
+      ctx.globalAlpha = 1
+    })
+
+    // ── Scan line (thinking / diagnostics) ────────────────────────────────────
+    if (lv.scanAmp > 0.05) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(cx, cy, irisR, 0, Math.PI * 2)
+      ctx.clip()
+
+      const sx = cx + scanX.current * irisR
+      const sg = ctx.createLinearGradient(sx - 22 * sc, 0, sx + 22 * sc, 0)
+      sg.addColorStop(0,   P + '00')
+      sg.addColorStop(0.5, P + 'cc')
+      sg.addColorStop(1,   P + '00')
+      ctx.fillStyle   = sg
+      ctx.globalAlpha = lv.scanAmp * 0.55
+      ctx.fillRect(sx - 22 * sc, cy - irisR, 44 * sc, irisR * 2)
+      ctx.globalAlpha = 1
+      ctx.restore()
+    }
+
+    // ── Pupil ─────────────────────────────────────────────────────────────────
+    const pupilR = irisR * lv.pupilSize
+    const pupilG = ctx.createRadialGradient(cx, cy, 0, cx, cy, pupilR)
+    pupilG.addColorStop(0,   '#000000')
+    pupilG.addColorStop(0.65, '#0a0318')
+    pupilG.addColorStop(1,   P + '44')
+    ctx.beginPath()
+    ctx.arc(cx, cy, pupilR, 0, Math.PI * 2)
+    ctx.fillStyle = pupilG
+    ctx.fill()
+
+    // Pupil glow ring
+    ctx.beginPath()
+    ctx.arc(cx, cy, pupilR, 0, Math.PI * 2)
+    ctx.lineWidth   = 1.3 * sc
+    ctx.strokeStyle = P
+    ctx.globalAlpha = 0.7 * lv.glow
+    ctx.shadowColor = PG
+    ctx.shadowBlur  = 14 * lv.glow
+    ctx.stroke()
+    ctx.shadowBlur  = 0
+    ctx.globalAlpha = 1
+
+    // Specular highlight
+    const hx = cx - irisR * 0.28
+    const hy = cy - irisR * 0.32
+    const hg = ctx.createRadialGradient(hx, hy, 0, hx, hy, 6 * sc)
+    hg.addColorStop(0, '#ffffffcc')
+    hg.addColorStop(1, '#ffffff00')
+    ctx.beginPath()
+    ctx.arc(hx, hy, 6 * sc, 0, Math.PI * 2)
+    ctx.fillStyle   = hg
+    ctx.globalAlpha = 0.20 * lv.glow
+    ctx.fill()
+    ctx.globalAlpha = 1
+
+    // ── Centre ambient glow ───────────────────────────────────────────────────
+    const ag = ctx.createRadialGradient(cx, cy, 0, cx, cy, 80 * sc)
+    ag.addColorStop(0, P + Math.round(lv.glow * 0.20 * 255).toString(16).padStart(2, '0'))
+    ag.addColorStop(1, P + '00')
+    ctx.beginPath()
+    ctx.arc(cx, cy, 80 * sc, 0, Math.PI * 2)
+    ctx.fillStyle   = ag
+    ctx.shadowColor = P
+    ctx.shadowBlur  = 20 * lv.glow
     ctx.fill()
     ctx.shadowBlur  = 0
 
-  }, [state, sc, ringColor, glowColor, cfg]))
+  }, [state, sc, cfg]))
 
-  return (
-    <canvas ref={canvasRef} width={size} height={size} style={{ display: 'block' }} />
-  )
+  return <canvas ref={canvasRef} width={size} height={size} style={{ display: 'block' }} />
 }

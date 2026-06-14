@@ -36,7 +36,7 @@ DEFINITIONS = [
         "name": "restart_backend",
         "description": (
             "Restart the TINA backend process. Use after Sam makes Python, config, or .env changes "
-            "that require a fresh process — the flag is picked up by start.py within ~1 second, "
+            "that require a fresh process — the flag is picked up by tina.py within ~1 second, "
             "the backend goes down and comes back up in ~3 seconds, and the dashboard reconnects automatically. "
             "Note: pure React/frontend changes don't need this — Vite HMR handles those instantly."
         ),
@@ -81,7 +81,7 @@ DEFINITIONS = [
 def handle(name: str, inputs: dict) -> str:
     if name == "read_backend_logs":
         if not os.path.exists(LOG_FILE):
-            return "No backend log found. Start the backend via start.py first."
+            return "No backend log found. Start the backend via tina.py first."
         n          = min(int(inputs.get("lines", 80)), 300)
         filter_str = inputs.get("filter", "").lower()
         with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
@@ -99,7 +99,7 @@ def handle(name: str, inputs: dict) -> str:
         reason = inputs.get("reason", "")
         data_dir = os.path.join(BASE_DIR, "data")
         os.makedirs(data_dir, exist_ok=True)
-        # Write restart flag — start.py watcher picks this up within ~1 second
+        # Write restart flag — tina.py watcher picks this up within ~1 second
         with open(RESTART_FLAG, "w") as f:
             f.write(reason)
         # Write post-restart sentinel — main.py reads this on next startup to announce outcome
@@ -107,7 +107,7 @@ def handle(name: str, inputs: dict) -> str:
         with open(sentinel, "w") as f:
             _json.dump({"reason": reason}, f)
         return (
-            "Restart flag written. start.py will terminate and relaunch the backend within ~1 second. "
+            "Restart flag written. tina.py will terminate and relaunch the backend within ~1 second. "
             "The WebSocket should reconnect automatically in ~3–5 seconds. "
             "I'll post to Slack once I'm back online. "
             f"Reason: {reason or 'not specified'}"

@@ -280,4 +280,11 @@ async def run_all(on_result):
     Run all checks concurrently. Calls on_result(id, label, status, detail) as each finishes.
     status is one of: "pass", "fail", "warn"
     """
-    async def _run(check_id, la
+    async def _run(check_id, label):
+        try:
+            status, detail = await _RUNNERS[check_id]()
+        except Exception as e:
+            status, detail = "fail", str(e)[:120]
+        await on_result(check_id, label, status, detail)
+
+    await asyncio.gather(*[_run(cid, lbl) for cid, lbl in CHECKS])
