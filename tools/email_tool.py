@@ -1,4 +1,4 @@
-"""TINA Tool — Email (Tristan's send/draft toolkit).
+"""TINA Tool — Email (Tristan's send/read toolkit).
 
 Three accounts:
   - personal         → kydanjenkins04@gmail.com   (Gmail API)
@@ -16,6 +16,8 @@ only sets after Ky has explicitly approved the final content.
 import os
 import sys
 import base64
+import html
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -37,7 +39,7 @@ except Exception:
     MS_GRAPH_TOKEN_FILE      = os.getenv("MS_GRAPH_TOKEN_FILE", "")
     OUTLOOK_SENDER           = os.getenv("OUTLOOK_SENDER", "kydan@kljsystems.com.au")
 
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 # account key → (provider, display address)
 _ACCOUNTS = {
@@ -47,6 +49,107 @@ _ACCOUNTS = {
 }
 
 DEFINITIONS = [
+    {
+        "name": "email_list",
+        "description": (
+            "List recent emails from one of Ky's inboxes. Returns id, from, subject, date, "
+            "short snippet, and read status. Use this to triage the inbox or find recent mail."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                    "description": "Which account to check.",
+                },
+                "folder": {
+                    "type": "string",
+                    "enum": ["inbox", "sent", "drafts"],
+                    "description": "Which folder to list. Defaults to inbox.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max emails to return (1-50). Default 20.",
+                },
+                "unread_only": {
+                    "type": "boolean",
+                    "description": "If true, only return unread emails.",
+                },
+            },
+            "required": ["account"],
+        },
+    },
+    {
+        "name": "email_read",
+        "description": (
+            "Read the full content of a specific email by its ID (from email_list or email_search). "
+            "Returns sender, recipients, subject, date, and full body text."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                },
+                "email_id": {
+                    "type": "string",
+                    "description": "The email ID returned by email_list or email_search.",
+                },
+                "mark_read": {
+                    "type": "boolean",
+                    "description": "If true, mark the email as read after fetching. Default false.",
+                },
+            },
+            "required": ["account", "email_id"],
+        },
+    },
+    {
+        "name": "email_search",
+        "description": (
+            "Search emails in one of Ky's accounts using a text query. "
+            "Supports Gmail search syntax (e.g. 'from:boss@co.com', 'subject:invoice', 'is:unread'). "
+            "For Outlook, uses a plain text search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query string.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (1-50). Default 10.",
+                },
+            },
+            "required": ["account", "query"],
+        },
+    },
+    {
+        "name": "email_mark_read",
+        "description": "Mark one or more emails as read.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                },
+                "email_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of email IDs to mark as read.",
+                },
+            },
+            "required": ["account", "email_ids"],
+        },
+    },
     {
         "name": "email_send",
         "description": (
@@ -215,6 +318,237 @@ def _send_outlook(sender: str, inputs: dict) -> str:
     return f"Email sent from {sender} to {inputs['to']} via Outlook/Graph."
 
 
+# ── Gmail read helpers ────────────────────────────────────────────────────────
+
+def _decode_gmail_body(payload: dict) -> str:
+    """Extract plain-text body from a Gmail message payload, falling back to HTML stripped."""
+    parts = payload.get("parts", [])
+    if not parts:
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+        return ""
+
+    def _find(parts, mime):
+        for p in parts:
+            if p.get("mimeType") == mime:
+                data = p.get("body", {}).get("data", "")
+                if data:
+                    return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+            if p.get("parts"):
+                r = _find(p["parts"], mime)
+                if r:
+                    return r
+        return ""
+
+    text = _find(parts, "text/plain")
+    if text:
+        return text
+    html_body = _find(parts, "text/html")
+    if html_body:
+        clean = re.sub(r"<[^>]+>", " ", html_body)
+        return html.unescape(re.sub(r"\s+", " ", clean)).strip()
+    return ""
+
+
+def _gmail_header(headers: list, name: str) -> str:
+    for h in headers:
+        if h["name"].lower() == name.lower():
+            return h["value"]
+    return ""
+
+
+def _gmail_list(account: str, folder: str, limit: int, unread_only: bool) -> str:
+    svc = _gmail_service(account)
+    folder_map = {"inbox": "INBOX", "sent": "SENT", "drafts": "DRAFT"}
+    label = folder_map.get(folder, "INBOX")
+    query = "is:unread" if unread_only else ""
+    result = svc.users().messages().list(
+        userId="me", labelIds=[label], q=query,
+        maxResults=min(limit, 50),
+    ).execute()
+    msgs = result.get("messages", [])
+    if not msgs:
+        return "No emails found."
+    lines = []
+    for m in msgs:
+        full = svc.users().messages().get(userId="me", id=m["id"], format="metadata",
+                                           metadataHeaders=["From", "Subject", "Date"]).execute()
+        hdrs = full.get("payload", {}).get("headers", [])
+        snippet = full.get("snippet", "")[:120]
+        is_unread = "UNREAD" in full.get("labelIds", [])
+        lines.append(
+            f"ID: {m['id']}\n"
+            f"  From: {_gmail_header(hdrs, 'From')}\n"
+            f"  Subject: {_gmail_header(hdrs, 'Subject')}\n"
+            f"  Date: {_gmail_header(hdrs, 'Date')}\n"
+            f"  Read: {'No' if is_unread else 'Yes'}\n"
+            f"  Preview: {snippet}"
+        )
+    return "\n\n".join(lines)
+
+
+def _gmail_read(account: str, email_id: str, mark_read: bool) -> str:
+    svc = _gmail_service(account)
+    msg = svc.users().messages().get(userId="me", id=email_id, format="full").execute()
+    hdrs = msg.get("payload", {}).get("headers", [])
+    body = _decode_gmail_body(msg.get("payload", {}))
+    if mark_read and "UNREAD" in msg.get("labelIds", []):
+        svc.users().messages().modify(
+            userId="me", id=email_id,
+            body={"removeLabelIds": ["UNREAD"]},
+        ).execute()
+    return (
+        f"From: {_gmail_header(hdrs, 'From')}\n"
+        f"To: {_gmail_header(hdrs, 'To')}\n"
+        f"Subject: {_gmail_header(hdrs, 'Subject')}\n"
+        f"Date: {_gmail_header(hdrs, 'Date')}\n\n"
+        f"{body.strip()}"
+    )
+
+
+def _gmail_search(account: str, query: str, limit: int) -> str:
+    svc = _gmail_service(account)
+    result = svc.users().messages().list(userId="me", q=query, maxResults=min(limit, 50)).execute()
+    msgs = result.get("messages", [])
+    if not msgs:
+        return "No emails found."
+    lines = []
+    for m in msgs:
+        full = svc.users().messages().get(userId="me", id=m["id"], format="metadata",
+                                           metadataHeaders=["From", "Subject", "Date"]).execute()
+        hdrs = full.get("payload", {}).get("headers", [])
+        snippet = full.get("snippet", "")[:120]
+        is_unread = "UNREAD" in full.get("labelIds", [])
+        lines.append(
+            f"ID: {m['id']}\n"
+            f"  From: {_gmail_header(hdrs, 'From')}\n"
+            f"  Subject: {_gmail_header(hdrs, 'Subject')}\n"
+            f"  Date: {_gmail_header(hdrs, 'Date')}\n"
+            f"  Read: {'No' if is_unread else 'Yes'}\n"
+            f"  Preview: {snippet}"
+        )
+    return "\n\n".join(lines)
+
+
+def _gmail_mark_read(account: str, email_ids: list) -> str:
+    svc = _gmail_service(account)
+    for eid in email_ids:
+        svc.users().messages().modify(
+            userId="me", id=eid,
+            body={"removeLabelIds": ["UNREAD"]},
+        ).execute()
+    return f"Marked {len(email_ids)} email(s) as read."
+
+
+# ── Outlook read helpers ───────────────────────────────────────────────────────
+
+def _graph_get(path: str, params: dict = None) -> dict:
+    import requests
+    token = _graph_token()
+    resp = requests.get(
+        f"https://graph.microsoft.com/v1.0{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params,
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _graph_patch(path: str, body: dict) -> None:
+    import requests
+    token = _graph_token()
+    resp = requests.patch(
+        f"https://graph.microsoft.com/v1.0{path}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body,
+        timeout=20,
+    )
+    resp.raise_for_status()
+
+
+def _strip_html(text: str) -> str:
+    clean = re.sub(r"<[^>]+>", " ", text)
+    return html.unescape(re.sub(r"\s+", " ", clean)).strip()
+
+
+def _outlook_list(sender: str, folder: str, limit: int, unread_only: bool) -> str:
+    folder_map = {"inbox": "inbox", "sent": "sentitems", "drafts": "drafts"}
+    f = folder_map.get(folder, "inbox")
+    params = {
+        "$top": min(limit, 50),
+        "$orderby": "receivedDateTime desc",
+        "$select": "id,from,subject,receivedDateTime,bodyPreview,isRead",
+    }
+    if unread_only:
+        params["$filter"] = "isRead eq false"
+    data = _graph_get(f"/users/{sender}/mailFolders/{f}/messages", params)
+    msgs = data.get("value", [])
+    if not msgs:
+        return "No emails found."
+    lines = []
+    for m in msgs:
+        lines.append(
+            f"ID: {m['id']}\n"
+            f"  From: {m.get('from', {}).get('emailAddress', {}).get('address', '?')}\n"
+            f"  Subject: {m.get('subject', '')}\n"
+            f"  Date: {m.get('receivedDateTime', '')}\n"
+            f"  Read: {'Yes' if m.get('isRead') else 'No'}\n"
+            f"  Preview: {m.get('bodyPreview', '')[:120]}"
+        )
+    return "\n\n".join(lines)
+
+
+def _outlook_read(sender: str, email_id: str, mark_read: bool) -> str:
+    data = _graph_get(f"/users/{sender}/messages/{email_id}", {"$select": "from,toRecipients,subject,receivedDateTime,body"})
+    body_content = data.get("body", {}).get("content", "")
+    if data.get("body", {}).get("contentType", "").lower() == "html":
+        body_content = _strip_html(body_content)
+    if mark_read:
+        _graph_patch(f"/users/{sender}/messages/{email_id}", {"isRead": True})
+    to_addrs = ", ".join(
+        r.get("emailAddress", {}).get("address", "")
+        for r in data.get("toRecipients", [])
+    )
+    return (
+        f"From: {data.get('from', {}).get('emailAddress', {}).get('address', '?')}\n"
+        f"To: {to_addrs}\n"
+        f"Subject: {data.get('subject', '')}\n"
+        f"Date: {data.get('receivedDateTime', '')}\n\n"
+        f"{body_content.strip()}"
+    )
+
+
+def _outlook_search(sender: str, query: str, limit: int) -> str:
+    params = {
+        "$search": f'"{query}"',
+        "$top": min(limit, 50),
+        "$select": "id,from,subject,receivedDateTime,bodyPreview,isRead",
+    }
+    data = _graph_get(f"/users/{sender}/messages", params)
+    msgs = data.get("value", [])
+    if not msgs:
+        return "No emails found."
+    lines = []
+    for m in msgs:
+        lines.append(
+            f"ID: {m['id']}\n"
+            f"  From: {m.get('from', {}).get('emailAddress', {}).get('address', '?')}\n"
+            f"  Subject: {m.get('subject', '')}\n"
+            f"  Date: {m.get('receivedDateTime', '')}\n"
+            f"  Read: {'Yes' if m.get('isRead') else 'No'}\n"
+            f"  Preview: {m.get('bodyPreview', '')[:120]}"
+        )
+    return "\n\n".join(lines)
+
+
+def _outlook_mark_read(sender: str, email_ids: list) -> str:
+    for eid in email_ids:
+        _graph_patch(f"/users/{sender}/messages/{eid}", {"isRead": True})
+    return f"Marked {len(email_ids)} email(s) as read."
+
+
 # ── Handler ───────────────────────────────────────────────────────────────────
 
 def handle(name: str, inputs: dict) -> str:
@@ -226,6 +560,62 @@ def handle(name: str, inputs: dict) -> str:
         lines.append("Routing: personal mail → personal; business mail → business_outlook (default); "
                      "business_gmail only on explicit request.")
         return "\n".join(lines)
+
+    if name == "email_list":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'."
+        provider, addr = _ACCOUNTS[account]
+        folder = inputs.get("folder", "inbox")
+        limit = int(inputs.get("limit", 20))
+        unread_only = bool(inputs.get("unread_only", False))
+        try:
+            if provider == "gmail":
+                return _gmail_list(account, folder, limit, unread_only)
+            return _outlook_list(addr, folder, limit, unread_only)
+        except Exception as e:
+            return f"email_list error ({account}): {e}"
+
+    if name == "email_read":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'."
+        provider, addr = _ACCOUNTS[account]
+        email_id = inputs.get("email_id", "")
+        mark_read = bool(inputs.get("mark_read", False))
+        try:
+            if provider == "gmail":
+                return _gmail_read(account, email_id, mark_read)
+            return _outlook_read(addr, email_id, mark_read)
+        except Exception as e:
+            return f"email_read error ({account}): {e}"
+
+    if name == "email_search":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'."
+        provider, addr = _ACCOUNTS[account]
+        query = inputs.get("query", "")
+        limit = int(inputs.get("limit", 10))
+        try:
+            if provider == "gmail":
+                return _gmail_search(account, query, limit)
+            return _outlook_search(addr, query, limit)
+        except Exception as e:
+            return f"email_search error ({account}): {e}"
+
+    if name == "email_mark_read":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'."
+        provider, addr = _ACCOUNTS[account]
+        email_ids = inputs.get("email_ids", [])
+        try:
+            if provider == "gmail":
+                return _gmail_mark_read(account, email_ids)
+            return _outlook_mark_read(addr, email_ids)
+        except Exception as e:
+            return f"email_mark_read error ({account}): {e}"
 
     if name == "email_send":
         account = inputs.get("account", "")

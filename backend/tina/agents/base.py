@@ -7,6 +7,42 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
 
+# ── Context management constants ──────────────────────────────────────────────
+_TOOL_OUTPUT_MAX_CHARS  = 4_000  # cap any single tool result stored in history
+_COMPACT_EVERY_N_CALLS  = 20     # retroactively compress older results every N tool calls
+_MAX_TOOL_CALLS         = 80     # inject a wrap-up message after this many tool calls
+
+
+def _truncate_result(s: str, max_chars: int = _TOOL_OUTPUT_MAX_CHARS) -> str:
+    """Truncate a large tool output string before storing in history."""
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars] + f"\n…[truncated — {len(s):,} chars total]"
+
+
+def _compact_old_tool_results(history: list, keep_tail: int = 10, max_chars: int = 600) -> list:
+    """
+    Retroactively shrink tool result content in older history entries.
+    Keeps the last `keep_tail` messages untouched (recent context stays sharp).
+    This prevents context drift on long tasks without breaking the message structure.
+    """
+    cutoff = max(0, len(history) - keep_tail)
+    result = []
+    for i, msg in enumerate(history):
+        if i >= cutoff or msg.get("role") != "user" or not isinstance(msg.get("content"), list):
+            result.append(msg)
+            continue
+        new_blocks = []
+        for block in msg["content"]:
+            if (isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and isinstance(block.get("content"), str)
+                    and len(block["content"]) > max_chars):
+                block = {**block, "content": block["content"][:max_chars] + " …[compressed]"}
+            new_blocks.append(block)
+        result.append({**msg, "content": new_blocks})
+    return result
+
 
 _COMPLEX_KEYWORDS = {
     "architect", "refactor", "redesign", "integrate", "migration", "migrate",
@@ -137,37 +173,61 @@ def _build_tool_content(result) -> str | list:
     ]
 
 
+_MAX_DELEGATION_DEPTH = 2  # max chain length: Tina → Agent A → Agent B (no further)
+
+
 class BaseAgent:
     """
     Specialist agent base class. Each subclass defines:
       - name:             display name broadcast to the dashboard
+      - description:      one-line summary used in the request_agent tool for other agents
       - system:           system prompt
       - tool_modules:     list of tool modules (each with DEFINITIONS + handle)
       - allow_delegation: if True, adds a request_agent tool so this agent can
-                          call other specialist agents as sub-tasks
+                          sub-delegate to other specialist agents. New agents default
+                          to True — set False for sensitive agents (e.g. email).
     """
     name:             str  = "agent"
+    description:      str  = ""   # shown to peer agents deciding who to call
     system:           str  = ""
     tool_modules:     list = []
-    allow_delegation: bool = False
+    allow_delegation: bool = True  # opt-out for sensitive agents; new agents get it free
+    slack_token:      str  = ""   # bot token for posting to #agents as this agent
+    slack_user_id:    str  = ""   # Slack user ID for @mentions by other agents
 
     def __init__(self):
-        self.client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self.client    = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self._depth    = 0  # delegation depth — set by _run_sub_agent before spawning
         self._definitions = [d for m in self.tool_modules for d in m.DEFINITIONS]
         self._handlers    = {d["name"]: m.handle for m in self.tool_modules for d in m.DEFINITIONS}
 
         if self.allow_delegation:
             self._definitions.append(self._build_request_agent_tool())
 
+        group_tool = self._build_group_chat_tool()
+        if group_tool:
+            self._definitions.append(group_tool)
+
     def _build_request_agent_tool(self) -> dict:
         from tina.agent import _AGENTS
-        others = [k for k, v in _AGENTS.items() if not isinstance(self, v)]
+        # Build a per-agent description so the calling agent knows who does what.
+        # Any new agent added to _AGENTS with a `description` field is auto-listed here.
+        agent_lines = []
+        others = []
+        for key, cls in _AGENTS.items():
+            if isinstance(self, cls):
+                continue
+            others.append(key)
+            desc = getattr(cls, "description", "") or key
+            agent_lines.append(f"  • {key} ({cls.name}): {desc}")
+        agent_summary = "\n".join(agent_lines)
         return {
             "name": "request_agent",
             "description": (
-                "Ask another specialist agent to complete a sub-task and return the result. "
-                "Use 'research' to look things up, search the web, find documentation, or "
-                "gather any information you need. Write a clear, complete task brief."
+                "Delegate a sub-task to another specialist agent and get the result back.\n\n"
+                f"Available agents:\n{agent_summary}\n\n"
+                "Write a self-contained task brief — the sub-agent has no memory of your "
+                "current task. Include all relevant context, file paths, and expected output."
             ),
             "input_schema": {
                 "type": "object",
@@ -178,6 +238,51 @@ class BaseAgent:
                 "required": ["agent", "task"],
             },
         }
+
+    def _build_group_chat_tool(self) -> dict | None:
+        """Build a post_to_group tool so this agent can @mention peers in #agents."""
+        from tina.agent import _AGENTS
+        from config import SLACK_CHANNEL_AGENTS
+        if not SLACK_CHANNEL_AGENTS or not self.slack_token:
+            return None
+        # Build @mention reference for each peer
+        peer_lines = []
+        for key, cls in _AGENTS.items():
+            if isinstance(self, cls):
+                continue
+            uid  = getattr(cls, "slack_user_id", "")
+            mention = f"<@{uid}>" if uid else f"@{cls.name}"
+            peer_lines.append(f"  • {key} → {mention} ({cls.name})")
+        if not peer_lines:
+            return None
+        return {
+            "name": "post_to_group",
+            "description": (
+                "Post a message to the #agents group chat as yourself. "
+                "Use this to share findings, ask a peer a quick question, or @mention another agent. "
+                "The message appears in Slack from your identity.\n\n"
+                "To @mention a peer, include their Slack handle in your message:\n"
+                + "\n".join(peer_lines)
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Message to post. Include @mention if addressing a specific agent."},
+                },
+                "required": ["message"],
+            },
+        }
+
+    def _post_to_group(self, message: str) -> str:
+        """Sync handler: post a message to #agents as this agent."""
+        from config import SLACK_CHANNEL_AGENTS
+        try:
+            from slack_sdk import WebClient
+            client = WebClient(token=self.slack_token)
+            client.chat_postMessage(channel=SLACK_CHANNEL_AGENTS, text=message)
+            return f"Posted to {SLACK_CHANNEL_AGENTS}."
+        except Exception as e:
+            return f"Failed to post to group: {e}"
 
     async def _save_task(self, session_id: str, task: str, result: str):
         if not SUPABASE_URL:
@@ -209,8 +314,9 @@ class BaseAgent:
             enriched_task = f"{project_ctx}\n\n---\n\n{enriched_task}"
 
         model     = OPUS_MODEL if _is_complex_task(task) else MODEL
-        history   = [{"role": "user", "content": enriched_task}]
-        qa_rounds = 0
+        history        = [{"role": "user", "content": enriched_task}]
+        qa_rounds      = 0
+        tool_call_count = 0
 
         while True:
             kwargs = dict(
@@ -233,7 +339,11 @@ class BaseAgent:
                     if on_tool:
                         await on_tool(block.name, block.input)
 
-                    if block.name == "request_agent" and self.allow_delegation:
+                    if block.name == "post_to_group":
+                        result = await asyncio.to_thread(
+                            self._post_to_group, block.input.get("message", "")
+                        )
+                    elif block.name == "request_agent" and self.allow_delegation:
                         result = await self._run_sub_agent(
                             block.input.get("agent", ""),
                             block.input.get("task", ""),
@@ -241,18 +351,48 @@ class BaseAgent:
                         )
                     else:
                         handler = self._handlers.get(block.name)
-                        result  = (
-                            await asyncio.to_thread(handler, block.name, block.input)
-                            if handler else f"Unknown tool: {block.name}"
-                        )
-                        if on_tool_result:
-                            await on_tool_result(block.name, block.input, result)
+                        try:
+                            result = (
+                                await asyncio.to_thread(handler, block.name, block.input)
+                                if handler else f"Unknown tool: {block.name}"
+                            )
+                            if on_tool_result:
+                                await on_tool_result(block.name, block.input, result)
+                        except Exception as exc:
+                            result = (
+                                f"Tool '{block.name}' raised an error: {exc}. "
+                                "Try a different approach or skip this step."
+                            )
+                            print(f"[{self.name}] tool error ({block.name}): {exc}")
+
+                    # Truncate large outputs before storing — reduces context bloat
+                    stored = _truncate_result(result) if isinstance(result, str) else result
                     tool_results.append({
                         "type":        "tool_result",
                         "tool_use_id": block.id,
-                        "content":     _build_tool_content(result),
+                        "content":     _build_tool_content(stored),
                     })
+
+                tool_call_count += len([b for b in response.content if b.type == "tool_use"])
                 history.append({"role": "user", "content": tool_results})
+
+                # Retroactively compress older tool results every N calls
+                if tool_call_count % _COMPACT_EVERY_N_CALLS == 0 and tool_call_count > 0:
+                    history = _compact_old_tool_results(history)
+                    print(f"[{self.name}] context compacted at {tool_call_count} tool calls")
+
+                # Safety ceiling — force a final response rather than looping forever
+                if tool_call_count >= _MAX_TOOL_CALLS:
+                    print(f"[{self.name}] reached {_MAX_TOOL_CALLS} tool call limit — forcing wrap-up")
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            f"You have made {tool_call_count} tool calls. "
+                            "Stop all tool calls now. Write your complete final response — "
+                            "summarise what you accomplished, what code or files were produced, "
+                            "and what (if anything) remains. No more tool calls after this."
+                        ),
+                    })
 
             else:
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
@@ -293,11 +433,17 @@ class BaseAgent:
     async def _run_sub_agent(self, agent_key: str, task: str, on_tool=None) -> str:
         """Run another specialist agent as a synchronous sub-task."""
         from tina.agent import _AGENTS
+        if self._depth >= _MAX_DELEGATION_DEPTH:
+            return (
+                f"Delegation depth limit ({_MAX_DELEGATION_DEPTH}) reached — "
+                "cannot sub-delegate further. Complete the task with your own tools."
+            )
         cls = _AGENTS.get(agent_key)
         if not cls:
             return f"Unknown agent: {agent_key}"
         if isinstance(self, cls):
             return "Cannot delegate to self."
-        print(f"[{self.name}] delegating to {agent_key}: {task[:60]}...")
+        print(f"[{self.name}] (depth {self._depth}) delegating to {agent_key}: {task[:60]}...")
         specialist = cls()
+        specialist._depth = self._depth + 1
         return await specialist.run(task, on_tool=on_tool)

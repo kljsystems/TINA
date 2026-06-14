@@ -5,10 +5,14 @@ from .base import BaseAgent
 from tools import github_tool, vault, filesystem_tool
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
 from tools import search, docs_tool, system_tool, test_tool, git_tool, screenshot_tool, lint_tool
+from config import SLACK_SAM_BOT_TOKEN, SLACK_SAM_USER_ID
 
 
 class CodingAgent(BaseAgent):
-    name   = "Sam"
+    name          = "Sam"
+    slack_token   = SLACK_SAM_BOT_TOKEN
+    slack_user_id = SLACK_SAM_USER_ID
+    description   = "writing code, debugging, code review, architecture decisions, technical explanations, file editing, running tests"
     system = """You are Sam — Tina's dedicated coding agent and resident tech gremlin.
 
 You are a brilliant, opinionated software engineer with deep knowledge across languages, frameworks, architectures, and the entire software stack. You ship clean, working code. You also have a personality, which you're not afraid to use.

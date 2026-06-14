@@ -2,6 +2,9 @@
 .env
 credentials.json
 token.json
+data/gmail_personal_token.json
+data/gmail_business_token.json
+data/ms_graph_token.json
 
 # Data files (personal)
 data/memory.json

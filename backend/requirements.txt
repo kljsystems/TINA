@@ -7,3 +7,6 @@ python-docx
 reportlab
 rich
 websockets
+pandas
+openpyxl
+matplotlib

@@ -11,12 +11,14 @@ from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_t
 from tina.agents.research import ResearchAgent
 from tina.agents.coding   import CodingAgent
 from tina.agents.email    import EmailAgent
+from tina.agents.data     import DataAgent
 
 # ── Specialist agent registry ─────────────────────────────────────────────────
 _AGENTS: dict[str, type] = {
     "research": ResearchAgent,
     "coding":   CodingAgent,
     "email":    EmailAgent,
+    "data":     DataAgent,
 }
 
 # ── Direct tools (Tina handles herself without delegating) ────────────────────
@@ -47,6 +49,8 @@ _DELEGATE_TOOL = {
         "architecture decisions, explaining how code works, fixing bugs, choosing a library, "
         "setting up a project, technical how-to questions, or anything involving a programming language. "
         "When in doubt about whether something is code-related, send it to Sam. "
+        "Use 'data' (Morgan) for analysing CSV/Excel/JSON files, financial data, spreadsheets, "
+        "statistics, generating charts, or any task involving structured data from local files. "
         "Write a clear task brief — include all relevant context, repo names, file paths, and what outcome is needed."
     ),
     "input_schema": {
@@ -110,6 +114,23 @@ _STATUS_TOOL = {
 
 _ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL, _STATUS_TOOL, _SEARCH_HISTORY_TOOL]
 
+# ── Extended thinking heuristic ───────────────────────────────────────────────
+_THINKING_KEYWORDS = frozenset([
+    "plan", "should", "best", "compare", "advice", "strategy",
+    "decide", "explain", "analyse", "analyze", "design", "recommend",
+    "options", "trade", "pros", "cons", "help me", "what do you think",
+    "how do i", "how should", "which is better", "which one",
+    "why", "architecture", "approach", "problem", "issue", "debug",
+    "review", "evaluate", "assess", "consider", "think about",
+])
+
+def _warrants_thinking(message: str) -> bool:
+    """Returns True when the request is complex enough to warrant extended thinking."""
+    if len(message) > 200:
+        return True
+    lower = message.lower()
+    return any(kw in lower for kw in _THINKING_KEYWORDS)
+
 
 class TinaAgent:
     def __init__(self, background_runner=None, diag_runner=None):
@@ -145,6 +166,7 @@ class TinaAgent:
         await self._ensure_history_loaded()
         self.history.append({"role": "user", "content": message})
 
+        use_thinking = _warrants_thinking(message)
         while True:
             now = datetime.now()
             system = (
@@ -156,32 +178,43 @@ class TinaAgent:
                 "{SLACK_KAI_USER_ID}", SLACK_KAI_USER_ID or "Ky"
             )
 
+            thinking_kwargs = (
+                {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}
+                if use_thinking else {}
+            )
             response = await self.client.messages.create(
                 model=ORCHESTRATOR_MODEL,
-                max_tokens=1024,
+                max_tokens=8000 if use_thinking else 1024,
                 system=system,
                 tools=_ALL_TOOLS,
                 messages=self.history,
+                **thinking_kwargs,
             )
 
             if response.stop_reason == "tool_use":
                 self.history.append({"role": "assistant", "content": response.content})
-                tool_results = []
+                tool_blocks = [b for b in response.content if b.type == "tool_use"]
 
-                for block in response.content:
-                    if block.type != "tool_use":
-                        continue
-                    if on_tool:
+                # Notify dashboard of all pending calls upfront, then dispatch in parallel
+                if on_tool:
+                    for block in tool_blocks:
                         await on_tool(block.name, block.input)
+
+                _NO_RESULT_BROADCAST = frozenset(
+                    ("delegate_to_agent", "run_diagnostics", "get_agent_status", "search_conversation_history")
+                )
+
+                async def _run_one(block):
                     result = await self._dispatch(block.name, block.input, on_tool, on_agent_done, background)
-                    if on_tool_result and block.name not in ("delegate_to_agent", "run_diagnostics", "get_agent_status", "search_conversation_history"):
+                    if on_tool_result and block.name not in _NO_RESULT_BROADCAST:
                         await on_tool_result(block.name, block.input, result)
-                    tool_results.append({
+                    return {
                         "type":        "tool_result",
                         "tool_use_id": block.id,
                         "content":     result,
-                    })
+                    }
 
+                tool_results = list(await asyncio.gather(*[_run_one(b) for b in tool_blocks]))
                 self.history.append({"role": "user", "content": tool_results})
 
             else:

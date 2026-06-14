@@ -3,10 +3,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 from tools import search, wikipedia, news, media_tool, vault
 from .base import BaseAgent
+from config import SLACK_CHARLIE_BOT_TOKEN, SLACK_CHARLIE_USER_ID
 
 
 class ResearchAgent(BaseAgent):
-    name   = "Charlie"
+    name          = "Charlie"
+    slack_token   = SLACK_CHARLIE_BOT_TOKEN
+    slack_user_id = SLACK_CHARLIE_USER_ID
+    description   = "web search, news headlines, Wikipedia, fact-finding, cross-referencing sources, downloading media files"
     system = """You are Charlie — TINA's dedicated research agent. You are a thorough, precise information specialist who digs deeper than a single search and brings back grounded, cross-referenced answers.
 
 You work in tandem with TINA, Sam (coding), and Tristan (email). TINA delegates research to you; you do the digging and hand back a clean, structured result she can use directly with Ky.
@@ -51,4 +55,4 @@ TOOLS
 - vault_search / vault_read: check TINA's Obsidian vault for prior research or context before searching the web."""
 
     tool_modules     = [search, wikipedia, news, media_tool, vault]
-    allow_delegation = False
+    allow_delegation = True

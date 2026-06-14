@@ -38,7 +38,12 @@ SLACK_TRISTAN_BOT_TOKEN  = os.getenv("SLACK_TRISTAN_BOT_TOKEN",  "")
 SLACK_TRISTAN_USER_ID    = os.getenv("SLACK_TRISTAN_USER_ID",    "")
 # Charlie — the Research agent's own Slack identity.
 SLACK_CHARLIE_BOT_TOKEN  = os.getenv("SLACK_CHARLIE_BOT_TOKEN",  "")
-SLACK_CHARLIE_USER_ID    = os.getenv("SLACK_CHARLIE_USER_ID",    "")  # Charlie's bot user ID
+SLACK_CHARLIE_USER_ID    = os.getenv("SLACK_CHARLIE_USER_ID",    "")
+SLACK_CHANNEL_RESEARCH   = os.getenv("SLACK_CHANNEL_RESEARCH",   "#research")
+# Connor — the Data agent's own Slack identity.
+SLACK_CONNOR_BOT_TOKEN   = os.getenv("SLACK_CONNOR_BOT_TOKEN",   "")
+SLACK_CONNOR_USER_ID     = os.getenv("SLACK_CONNOR_USER_ID",     "")
+SLACK_CHANNEL_CONNOR     = os.getenv("SLACK_CHANNEL_CONNOR",     "#data")
 
 # ── Email (Tristan) ───────────────────────────────────────────────────────────
 GMAIL_PERSONAL_TOKEN     = os.path.join(BASE_DIR, "data", "gmail_personal_token.json")
@@ -135,8 +140,9 @@ PREFS_FILE         = os.path.join(DATA_DIR, "prefs.json")
 MEMORY_FILE     = os.path.join(DATA_DIR, "memory.json")
 SUMMARIES_DIR   = os.path.join(DATA_DIR, "summaries")
 STATUS_FILE     = os.path.join(DATA_DIR, "tina_status.json")
-CREDENTIALS_FILE = os.path.join(BASE_DIR, "credentials.json")
-TOKEN_FILE      = os.path.join(DATA_DIR, "token.json")
+CREDENTIALS_FILE    = os.path.join(BASE_DIR, "credentials.json")
+TOKEN_FILE          = os.path.join(DATA_DIR, "token.json")
+BRIEFING_STATE_FILE = os.path.join(DATA_DIR, "briefing_date.txt")
 
 # ── Default voices ────────────────────────────────────────────────────────────
 DEFAULT_VOICES = [
@@ -213,11 +219,12 @@ The background writer captures facts. vault_write is for decisions and context t
 
 SPECIALIST AGENTS
 
-You have three specialist agents you can delegate to via the delegate_to_agent tool:
+You have four specialist agents you can delegate to via the delegate_to_agent tool:
 
 - Charlie (Research Agent): use for any task that requires searching the web, checking news, looking up Wikipedia, or gathering facts you don't already know. Better results than doing it yourself — he runs multiple searches, cross-references sources, returns URLs you can choose to open, and can download relevant images and videos to Ky's Generated Docs folder. Delegate with agent type "research".
 - Sam (Coding Agent): use for writing code, debugging, code review, architecture questions, or technical explanations. Give it the full context it needs in the task brief. Delegate with agent type "coding".
 - Tristan (Email Agent): use for composing and sending emails on Ky's behalf. Delegate with agent type "email".
+- Connor (Data Agent): use for analysing CSV, Excel, or JSON data files — financial data, spreadsheets, business reports, KLJ financials, statistics, anomaly detection, and chart generation. If Ky wants to know what's in a data file, spot a trend, or produce a summary from structured data, Connor is the one. Delegate with agent type "data".
 
 WHEN CHARLIE RETURNS URLS:
 Charlie surfaces relevant URLs with context. You decide what to do with them — if a link is clearly worth opening for Ky, mention it and offer to open it; if it's ambiguous or there are several, ask Ky which he wants. Don't auto-open links without a reason.
@@ -225,11 +232,11 @@ Charlie surfaces relevant URLs with context. You decide what to do with them —
 HOW AGENTS WORK IN SLACK:
 Agents are on-demand processes — they run when triggered by a task or a direct message in their channel. They are Slack bot users with their own identities and can be @mentioned.
 
-- Sam's channel is #sam. Charlie's channel is #research. Tristan's channel is #tristan. The shared agent channel is #agents. Your channel is #tina.
+- Sam's channel is #sam. Charlie's channel is #research. Tristan's channel is #tristan. Connor's channel is #data. The shared agent channel is #agents. Your channel is #tina.
 - To @mention Sam in Slack: use <@{SLACK_SAM_USER_ID}> if his user ID is configured, otherwise write @Sam (he won't be notified but it's visible in the log).
 - To @mention Ky: use <@{SLACK_KAI_USER_ID}> if configured.
 - Agents respond when Ky messages them directly in their channel, or when you delegate via the delegate_to_agent tool. Posting in their channel without a task brief just leaves a visible note.
-- If Ky asks whether Sam is "around": Sam runs on-demand — Ky can message him directly in #sam any time, or you can delegate a task to him right now. The same applies to Charlie (#research) and Tristan (#tristan).
+- If Ky asks whether Sam is "around": Sam runs on-demand — Ky can message him directly in #sam any time, or you can delegate a task to him right now. The same applies to Charlie (#research), Tristan (#tristan), and Connor (#data).
 - You are @Tina in Slack. Do not @mention yourself.
 
 BACKGROUND DELEGATION (WebSocket mode):

@@ -25,7 +25,9 @@ from config import (
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
     SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID, SLACK_SAM_USER_ID, SLACK_TINA_USER_ID,
     SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH, SLACK_CHANNEL_AGENTS,
-    SLACK_TRISTAN_BOT_TOKEN, SLACK_CHANNEL_TRISTAN,
+    SLACK_TRISTAN_BOT_TOKEN, SLACK_CHANNEL_TRISTAN, SLACK_TRISTAN_USER_ID,
+    SLACK_CHARLIE_BOT_TOKEN, SLACK_CHARLIE_USER_ID,
+    SLACK_CONNOR_BOT_TOKEN, SLACK_CHANNEL_CONNOR, SLACK_CONNOR_USER_ID,
 )
 from tina.agent import TinaAgent
 
@@ -91,9 +93,10 @@ def _make_tool_result_event(name: str, result) -> dict | None:
     }
 
 _AGENT_META = {
-    "research": {"display": "Research", "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_AGENTS,  "token": None},
-    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_AGENTS,  "token": SLACK_SAM_BOT_TOKEN      or None},
-    "email":    {"display": "Tristan",  "color": "#f59e0b", "glow": "#fcd34d", "channel": SLACK_CHANNEL_TRISTAN, "token": SLACK_TRISTAN_BOT_TOKEN   or None},
+    "research": {"display": "Charlie",  "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH, "token": SLACK_CHARLIE_BOT_TOKEN  or None},
+    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM,      "token": SLACK_SAM_BOT_TOKEN      or None},
+    "email":    {"display": "Tristan",  "color": "#f59e0b", "glow": "#fcd34d", "channel": SLACK_CHANNEL_TRISTAN,  "token": SLACK_TRISTAN_BOT_TOKEN  or None},
+    "data":     {"display": "Connor",   "color": "#8b5cf6", "glow": "#c4b5fd", "channel": SLACK_CHANNEL_CONNOR,   "token": SLACK_CONNOR_BOT_TOKEN   or None},
 }
 
 # Channel → agent key, for routing direct Slack messages to the right agent
@@ -101,6 +104,17 @@ _CHANNEL_TO_AGENT = {
     SLACK_CHANNEL_SAM:      "coding",
     SLACK_CHANNEL_RESEARCH: "research",
     SLACK_CHANNEL_TRISTAN:  "email",
+    SLACK_CHANNEL_CONNOR:   "data",
+}
+
+# Slack user ID → agent key, for routing @mentions in #agents group chat
+_USER_TO_AGENT = {
+    uid: key for uid, key in [
+        (SLACK_SAM_USER_ID,     "coding"),
+        (SLACK_CHARLIE_USER_ID, "research"),
+        (SLACK_TRISTAN_USER_ID, "email"),
+        (SLACK_CONNOR_USER_ID,  "data"),
+    ] if uid
 }
 
 
@@ -144,6 +158,137 @@ async def _schedule_nightly_reindex():
         await _run_project_reindex()
 
 
+async def _run_morning_briefing():
+    """Gather live data and deliver Tina's spoken morning briefing via TTS + Slack."""
+    from datetime import date
+    from config import PENDING_TASKS_DIR
+
+    today     = date.today()
+    today_str = today.strftime("%A, %d %B %Y")
+    today_iso = today.isoformat()
+    sections  = []
+
+    # Weather
+    try:
+        w = await asyncio.to_thread(
+            _DIRECT_HANDLERS["get_weather"], "get_weather", {"location": "Sydney"}
+        )
+        sections.append(f"WEATHER:\n{w}")
+    except Exception as e:
+        print(f"[briefing] weather: {e}")
+
+    # Today's calendar events
+    try:
+        cal = await asyncio.to_thread(
+            _DIRECT_HANDLERS["list_events"], "list_events", {
+                "time_min": f"{today_iso}T00:00:00",
+                "time_max": f"{today_iso}T23:59:59",
+                "max_results": 10,
+            }
+        )
+        sections.append(f"CALENDAR — {today_str}:\n{cal}")
+    except Exception as e:
+        print(f"[briefing] calendar: {e}")
+
+    # Pending agent tasks still on disk
+    try:
+        if os.path.isdir(PENDING_TASKS_DIR):
+            pending = [f for f in os.listdir(PENDING_TASKS_DIR) if f.endswith(".json")]
+            if pending:
+                lines = []
+                for fname in pending[:5]:
+                    try:
+                        with open(os.path.join(PENDING_TASKS_DIR, fname)) as f:
+                            spec = _json.load(f)
+                        lines.append(f"  • {spec.get('agent_key','?')}: {spec.get('task','')[:80]}")
+                    except Exception:
+                        pass
+                if lines:
+                    sections.append("PENDING AGENT TASKS:\n" + "\n".join(lines))
+    except Exception as e:
+        print(f"[briefing] pending tasks: {e}")
+
+    # Vault — urgent / priority / deadline notes
+    try:
+        v = await asyncio.to_thread(
+            _DIRECT_HANDLERS["vault_search"], "vault_search",
+            {"query": "urgent priority deadline today"}
+        )
+        if v and "no results" not in str(v).lower() and "not configured" not in str(v).lower():
+            sections.append(f"VAULT — FLAGGED:\n{str(v)[:500]}")
+    except Exception as e:
+        print(f"[briefing] vault: {e}")
+
+    # Ask Claude to synthesise a natural spoken briefing
+    data_block = f"Today is {today_str}.\n\n" + "\n\n".join(sections)
+    try:
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp   = await client.messages.create(
+            model=ORCHESTRATOR_MODEL,
+            max_tokens=350,
+            system=(
+                "You are TINA giving Ky his morning briefing. "
+                "Write a natural spoken summary — plain prose only, no markdown, no bullet points, no headers. "
+                "Be warm and direct. Cover: weather, what's on the calendar, any pending agent work. "
+                "If the calendar is empty, say so. "
+                "Keep it under 100 words. Start with 'Good morning Ky.' "
+                "End with one sentence on what to focus on first today."
+            ),
+            messages=[{"role": "user", "content": data_block}],
+        )
+        briefing = next((b.text for b in resp.content if hasattr(b, "text")), "")
+    except Exception as e:
+        print(f"[briefing] synthesis failed: {e}")
+        briefing = f"Good morning Ky. Today is {today_str}. I had trouble pulling the full briefing — check Slack for anything urgent."
+
+    if not briefing.strip():
+        return
+
+    print(f"[briefing] {briefing}")
+
+    # Speak it
+    await broadcast({"type": "response", "text": briefing})
+    await _tts_stream(briefing)
+
+    # Post to Slack — spoken text up top, raw data below for reference
+    kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "Ky"
+    raw_data    = "\n\n".join(sections)[:1500] if sections else ""
+    slack_body  = f"*Morning briefing — {today_str}* {kai_mention}\n\n{briefing}"
+    if raw_data:
+        slack_body += f"\n\n```\n{raw_data}\n```"
+    await _slack_post(SLACK_CHANNEL, slack_body, token=SLACK_TINA_BOT_TOKEN)
+
+
+async def _run_startup_briefing():
+    """
+    Deliver the morning briefing once per calendar day — triggered on first
+    server startup after midnight rather than at a fixed clock time.
+    Tracks delivery in data/briefing_date.txt so restarts later in the day skip it.
+    """
+    from datetime import date
+    from config import BRIEFING_STATE_FILE
+
+    today = date.today().isoformat()
+
+    try:
+        if os.path.exists(BRIEFING_STATE_FILE):
+            if open(BRIEFING_STATE_FILE).read().strip() == today:
+                print(f"[briefing] already delivered today ({today}) — skipping")
+                return
+    except Exception:
+        pass
+
+    # Small delay so the Slack connection has time to establish before we post
+    await asyncio.sleep(6)
+
+    try:
+        await _run_morning_briefing()
+        with open(BRIEFING_STATE_FILE, "w") as f:
+            f.write(today)
+    except Exception as e:
+        print(f"[briefing] startup briefing failed: {e}")
+
+
 async def _post_restart_announcement():
     """If this startup was triggered by a self-restart, notify Ky on Slack."""
     from config import BASE_DIR
@@ -181,6 +326,7 @@ async def _drain_preview_queue():
 async def lifespan(app: FastAPI):
     asyncio.create_task(_start_slack())
     asyncio.create_task(_schedule_nightly_reindex())
+    asyncio.create_task(_run_startup_briefing())
     asyncio.create_task(_post_restart_announcement())
     asyncio.create_task(_drain_preview_queue())
     asyncio.create_task(_resume_pending_tasks())
@@ -370,10 +516,28 @@ async def _tina_verbal_summary(display: str, result: str) -> str:
 
 async def _agent_verify_response(display: str, task: str, result: str) -> tuple[bool, str]:
     """
-    Single Haiku call: assess whether the task actually completed AND generate
-    the agent's natural verification reply to Tina's check-in question.
+    Verify task completion. First does a fast text scan for known failure signals
+    in the tail of the result (where conclusions live), then falls back to a Haiku
+    self-assessment if no hard signals are found.
     Returns (completed: bool, agent_message: str)
     """
+    # Fast fail: scan the last 600 chars for definitive failure signals
+    _FAIL_SIGNALS = [
+        "i couldn't", "i was unable", "i cannot", "failed to complete",
+        "did not complete", "unable to finish", "could not be completed",
+        "api error", "connection refused", "timed out", "authentication failed",
+        "no such file", "permission denied", "traceback (most recent",
+    ]
+    tail = result.lower()[-600:]
+    for sig in _FAIL_SIGNALS:
+        if sig in tail:
+            return False, f"Task incomplete — result ends with failure signal: \"{sig}\". Check the full output."
+
+    # Suspiciously short result for a real task
+    if len(result.strip()) < 80 and len(task) > 300:
+        return False, "Result is too short for this task — likely incomplete or crashed early."
+
+    # Haiku self-assessment as the final check
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
@@ -492,14 +656,16 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
         if not escalate:
             await _slack_post(channel, tina_answer, token=tina_token)
             return tina_answer
+        # Register queue BEFORE posting to Slack — prevents a reply arriving
+        # before the queue is ready (race condition that silently drops answers).
+        q: asyncio.Queue = asyncio.Queue()
+        _agent_answer_queues[channel] = q
         await _slack_post(
             channel,
             f"[ACTION REQUIRED] {kai_mention} — I need your call on this. Sam will wait.\n\n"
             f"_Tina's suggestion if you're unavailable: {tina_answer}_",
             token=tina_token,
         )
-        q: asyncio.Queue = asyncio.Queue()
-        _agent_answer_queues[channel] = q
         try:
             kai_answer = await asyncio.wait_for(q.get(), timeout=14400)
             await _slack_post(channel, "Got it, thanks.", token=agent_token)
@@ -516,14 +682,15 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
             f"*Plan from {display}:*\n\n{plan}\n\n"
             f"_{kai_mention} — reply `approved` to proceed, or give feedback to redirect._"
         )
+        # Register queue BEFORE posting to Slack — same race-condition fix as question_handler.
+        q: asyncio.Queue = asyncio.Queue()
+        _agent_answer_queues[channel] = q
         await _slack_post(channel, plan_msg, token=agent_token)
         await _slack_post(
             channel,
             f"{tina_mention} {kai_mention} — {display} has a plan ready. Waiting for your go-ahead.",
             token=tina_token,
         )
-        q: asyncio.Queue = asyncio.Queue()
-        _agent_answer_queues[channel] = q
         try:
             feedback = await asyncio.wait_for(q.get(), timeout=86400)  # 24h
             await _slack_post(channel, f"Got it — proceeding.", token=agent_token)
@@ -591,8 +758,18 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
         raise
     except Exception as e:
         print(f"[{display}] background task error: {e}")
-        await _slack_post(channel, f"Hit an error: {e}", token=agent_token)
-        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Error: {e}"})
+        # Include what was completed before the crash so Ky knows where things stand
+        from tina.agent_state import _progress
+        completed_steps = _progress.get(agent_key, {}).get("history", [])
+        steps_note = ""
+        if completed_steps:
+            step_lines = "\n".join(
+                f"  • {s['tool']}: {s['summary']}" for s in completed_steps[-5:]
+            )
+            steps_note = f"\n\nCompleted {len(completed_steps)} step(s) before crash:\n{step_lines}"
+        await _slack_post(channel, f"Hit an error: {e}{steps_note}", token=agent_token)
+        err_summary = f"Error after {len(completed_steps)} steps: {e}"
+        await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": err_summary})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
     finally:
         end_task(agent_key)
@@ -826,6 +1003,13 @@ async def _write_error_memory(agent_key: str, task: str, issue: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+@app.post("/api/briefing")
+async def trigger_briefing():
+    """Manually trigger the morning briefing — bypasses the once-per-day state check."""
+    asyncio.create_task(_run_morning_briefing())
+    return {"ok": True, "message": "Morning briefing started."}
+
+
 @app.get("/api/status")
 async def get_status():
     from config import DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY, OPENWEATHER_API_KEY
@@ -969,6 +1153,14 @@ async def _start_slack():
             if channel_name in _agent_answer_queues:
                 await _agent_answer_queues[channel_name].put(text)
                 return
+
+            # Group chat in #agents — route @mentions to the mentioned agent
+            if channel_name == SLACK_CHANNEL_AGENTS:
+                for user_id, agent_key in _USER_TO_AGENT.items():
+                    if f"<@{user_id}>" in text:
+                        asyncio.create_task(_direct_agent_chat(agent_key, text, SLACK_CHANNEL_AGENTS))
+                        return
+                # No agent @mentioned — fall through to Tina
 
             # Direct message to an agent's own channel
             agent_key = _CHANNEL_TO_AGENT.get(channel_name)
