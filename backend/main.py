@@ -1068,6 +1068,22 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_schedule_stripe_monitor())
     asyncio.create_task(_schedule_pattern_scan())
     asyncio.create_task(_start_slack_listener())
+
+    # Wake-word detector — runs in background thread, fires wake_word_detected WS event
+    try:
+        from tina.wake_word import start as _ww_start
+        _ww_loop = asyncio.get_running_loop()
+
+        async def _on_wake_word(status: str, text: str):
+            if status == "triggered":
+                await broadcast({"type": "wake_word_detected"})
+            elif status == "ready":
+                await broadcast({"type": "wake_word_ready"})
+
+        _ww_start(_ww_loop, _on_wake_word)
+    except Exception as e:
+        print(f"[wake-word] could not start: {e}")
+
     yield
 
 
@@ -1609,6 +1625,13 @@ async def _pyttsx3_speak(text: str):
 async def _tts_stream(reply: str):
     """Send reply to ElevenLabs as one call. Serialised via _tts_lock — no simultaneous playback."""
     async with _tts_lock:
+        # Pause wake-word detector so TINA's voice doesn't re-trigger herself
+        try:
+            from tina.wake_word import pause as _ww_pause, resume as _ww_resume
+            _ww_pause()
+        except Exception:
+            _ww_pause = _ww_resume = None
+
         await broadcast({"type": "state", "state": "speaking"})
 
         if ELEVENLABS_API_KEY:
@@ -1626,6 +1649,14 @@ async def _tts_stream(reply: str):
             await _pyttsx3_speak(reply)
 
         await broadcast({"type": "audio_end"})
+
+        # Resume wake-word detector after a short buffer (audio may still be playing)
+        try:
+            await asyncio.sleep(1.5)
+            from tina.wake_word import resume as _ww_resume
+            _ww_resume()
+        except Exception:
+            pass
 
 
 async def _handle_message(text: str):

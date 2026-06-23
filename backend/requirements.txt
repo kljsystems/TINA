@@ -12,3 +12,5 @@ openpyxl
 matplotlib
 yt-dlp
 httpx
+faster-whisper
+sounddevice

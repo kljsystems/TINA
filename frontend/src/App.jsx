@@ -588,7 +588,7 @@ export default function App() {
     agentStatuses, diagRunning, diagResults,
     codePreviewFiles, panels, dismissPanel,
     featuredPanels, dismissFeaturedPanel,
-    morningActive,
+    morningActive, wakeWordActive,
     wakeActive, convActive,
     sendMessage, stopRecording,
     enterConversation, exitConversation,
@@ -835,21 +835,27 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {/* Voice indicator — activated by SPACE */}
+          {/* Voice indicator — SPACE activates, wake word auto-activates */}
           <div
-            title={convActive ? (isRecording ? 'Recording… press SPACE to stop' : 'Listening — press SPACE to speak') : 'Press SPACE to start voice'}
+            title={
+              convActive
+                ? (isRecording ? 'Recording… press SPACE to stop' : 'Listening — press SPACE to speak')
+                : wakeWordActive
+                ? 'Wake word active — say "Tina" to start'
+                : 'Press SPACE to start voice'
+            }
             style={{
               padding: '5px 14px', fontSize: 10, letterSpacing: 1,
-              background: isRecording ? '#ef444422' : convActive ? `${P}33` : 'transparent',
-              border: `1px solid ${isRecording ? '#ef4444' : convActive ? P : P + '22'}`,
-              color: isRecording ? '#ef4444' : convActive ? PG : connected ? PG + '66' : PG + '22',
+              background: isRecording ? '#ef444422' : convActive ? `${P}33` : wakeWordActive ? '#4ade8011' : 'transparent',
+              border: `1px solid ${isRecording ? '#ef4444' : convActive ? P : wakeWordActive ? '#4ade8055' : P + '22'}`,
+              color: isRecording ? '#ef4444' : convActive ? PG : wakeWordActive ? '#4ade80cc' : connected ? PG + '66' : PG + '22',
               borderRadius: 3,
-              animation: isRecording ? 'micpulse 0.8s ease-in-out infinite' : 'none',
+              animation: isRecording ? 'micpulse 0.8s ease-in-out infinite' : wakeWordActive && !convActive ? 'breathe 3s ease-in-out infinite' : 'none',
               transition: 'all 0.2s', fontFamily: "'Courier New',monospace",
               userSelect: 'none',
             }}
           >
-            {isRecording ? '■ REC' : convActive ? '◉ LIVE' : '● SPACE'}
+            {isRecording ? '■ REC' : convActive ? '◉ LIVE' : wakeWordActive ? '◎ WAKE' : '● SPACE'}
           </div>
 
           {/* CHAT button */}
@@ -1186,6 +1192,7 @@ export default function App() {
         @keyframes micpulse  { 0%,100%{box-shadow:0 0 6px #ef4444} 50%{box-shadow:0 0 22px #ef4444} }
         @keyframes wakepulse { 0%,100%{opacity:0.5}  50%{opacity:1}    }
         @keyframes slidein   { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes breathe   { 0%,100%{opacity:0.5} 50%{opacity:1} }
         ::-webkit-scrollbar { width: 2px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: ${P}33; border-radius: 1px; }

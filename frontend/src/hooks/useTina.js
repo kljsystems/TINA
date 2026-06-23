@@ -37,6 +37,7 @@ export function useTina({ micDeviceId } = {}) {
   const [panels,            setPanels]            = useState([])
   const [featuredPanels,    setFeaturedPanels]    = useState([])
   const [morningActive,     setMorningActive]     = useState(false)
+  const [wakeWordActive,    setWakeWordActive]    = useState(false)
   const [activityLogVisible, setActivityLogVisible] = useState(true)
   const [agentStatuses, setAgentStatuses] = useState({
     tina:      { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
@@ -558,6 +559,14 @@ export function useTina({ micDeviceId } = {}) {
         case 'morning_routine_end':
           setMorningActive(false)
           break
+        case 'wake_word_ready':
+          setWakeWordActive(true)
+          break
+        case 'wake_word_detected':
+          if (!convActiveRef.current) {
+            enterConversation()
+          }
+          break
         case 'prefs':
           if (data.data?.activity_log !== undefined)
             setActivityLogVisible(data.data.activity_log)
@@ -607,7 +616,7 @@ export function useTina({ micDeviceId } = {}) {
     services, pipeline, turnCount, sessionStart, agentStatuses,
     diagRunning, diagResults, codePreviewFiles,
     panels, dismissPanel, featuredPanels, dismissFeaturedPanel,
-    morningActive, activityLogVisible,
+    morningActive, wakeWordActive, activityLogVisible,
     wakeActive, convActive,
     sendMessage, startRecording, stopRecording,
     enterConversation, exitConversation, startWakeWord,
