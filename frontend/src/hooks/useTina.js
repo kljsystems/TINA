@@ -1,14 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 
-const WS_URL = 'ws://localhost:8000/ws'
+const WS_URL       = 'ws://localhost:8000/ws'
 const RECONNECT_MS = 3000
+const WAKE_WORDS   = ['hey tina', 'tina', 'ok tina']
+const SILENCE_RMS    = 10    // time-domain RMS below this = silence (0–128 range)
+const SILENCE_MS     = 7000  // 7s continuous silence after speech → stop recording
+const MIN_SPEECH_MS  = 1200  // must have spoken for at least 1.2s before cutoff can trigger
+const NO_SPEECH_MS   = 9000  // 9s no speech at all → exit conversation mode
 
 function getMimeType() {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
   return types.find(t => MediaRecorder.isTypeSupported(t)) ?? ''
 }
 
-export function useTina() {
+export function useTina({ micDeviceId } = {}) {
   const [connected,    setConnected]   = useState(false)
   const [tinaState,    setTinaState]   = useState('offline')
   const [isRecording,  setIsRecording] = useState(false)
@@ -23,22 +28,37 @@ export function useTina() {
   const [alert,        setAlert]        = useState(null)
   const [lastResponse, setLastResponse] = useState(null)
   const [services,     setServices]     = useState(null)
+  const [pipeline,     setPipeline]     = useState(null)
   const [diagRunning,       setDiagRunning]       = useState(false)
   const [diagResults,       setDiagResults]       = useState({})
   const [turnCount,         setTurnCount]         = useState(0)
   const [sessionStart]                            = useState(Date.now())
   const [codePreviewFiles,  setCodePreviewFiles]  = useState([])
   const [panels,            setPanels]            = useState([])
+  const [featuredPanels,    setFeaturedPanels]    = useState([])
+  const [morningActive,     setMorningActive]     = useState(false)
   const [activityLogVisible, setActivityLogVisible] = useState(true)
   const [agentStatuses, setAgentStatuses] = useState({
-    tina:     { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
-    research: { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9' },
-    coding:   { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7', label: 'Sam' },
-    email:    { status: 'idle',    tool: null, color: '#f59e0b', glow: '#fcd34d', label: 'Tristan' },
+    tina:      { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
+    research:  { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9',  label: 'Charlie' },
+    coding:    { status: 'idle',    tool: null, color: '#10b981', glow: '#6ee7b7',  label: 'Sam'     },
+    email:     { status: 'idle',    tool: null, color: '#f59e0b', glow: '#fcd34d',  label: 'Tristan' },
+    data:      { status: 'idle',    tool: null, color: '#a78bfa', glow: '#c4b5fd',  label: 'Connor'  },
+    marketing: { status: 'idle',    tool: null, color: '#ec4899', glow: '#f9a8d4',  label: 'Wade'    },
+    website:   { status: 'idle',    tool: null, color: '#0ea5e9', glow: '#7dd3fc',  label: 'Jamie'   },
   })
+
+  // Wake word + conversation mode state
+  const [wakeActive, setWakeActive] = useState(false)
+  const [convActive, setConvActive] = useState(false)
 
   const activeAgentKeyRef     = useRef(null)
   const backgroundAgentKeyRef = useRef(null)
+  const wakeActiveRef         = useRef(false)
+  const convActiveRef         = useRef(false)
+  const recognitionRef        = useRef(null)
+  const vadRef                = useRef(null)
+  const noSpeechRef           = useRef(null)
 
   const TOOL_LABELS = {
     vault_search: 'VAULT SEARCH', vault_read: 'VAULT READ',
@@ -66,6 +86,10 @@ export function useTina() {
     setPanels(prev => prev.filter(p => p.id !== id))
   }, [])
 
+  const dismissFeaturedPanel = useCallback((id) => {
+    setFeaturedPanels(prev => prev.filter(p => p.id !== id))
+  }, [])
+
   // Poll service health every 30s
   useEffect(() => {
     const check = () =>
@@ -78,12 +102,28 @@ export function useTina() {
     return () => clearInterval(t)
   }, [])
 
+  // Poll pipeline state every 30s
+  useEffect(() => {
+    const check = () =>
+      fetch('http://localhost:8000/api/pipeline')
+        .then(r => r.json())
+        .then(setPipeline)
+        .catch(() => {})
+    check()
+    const t = setInterval(check, 30000)
+    return () => clearInterval(t)
+  }, [])
+
   const wsRef            = useRef(null)
   const alertTimerRef    = useRef(null)
   const mediaRef         = useRef(null)
   const chunksRef        = useRef([])
   const audioCtxRef      = useRef(null)
   const nextStartTimeRef = useRef(0)
+
+  // All cross-referencing callbacks live here to avoid circular useCallback deps.
+  // Updated each render so async callers always get the latest version.
+  const cb = useRef({})
 
   const showAlert = useCallback((msg, type = 'tool') => {
     if (alertTimerRef.current) clearTimeout(alertTimerRef.current)
@@ -97,7 +137,7 @@ export function useTina() {
 
   const getAudioCtx = useCallback(() => {
     if (!audioCtxRef.current || audioCtxRef.current.state === 'closed')
-      audioCtxRef.current = new AudioContext()
+      audioCtxRef.current = new AudioContext({ sampleRate: 44100, latencyHint: 'playback' })
     return audioCtxRef.current
   }, [])
 
@@ -118,6 +158,234 @@ export function useTina() {
     }
   }, [getAudioCtx])
 
+  const unlockAudio = useCallback(() => {
+    const ctx = getAudioCtx()
+    if (ctx.state === 'suspended') ctx.resume()
+  }, [getAudioCtx])
+
+  const sendMessage = useCallback(text => {
+    unlockAudio()
+    if (wsRef.current?.readyState === WebSocket.OPEN)
+      wsRef.current.send(JSON.stringify({ type: 'message', text }))
+  }, [unlockAudio])
+
+  // Stop any in-progress recording (manual or VAD) and clear VAD timers
+  const stopRecording = useCallback(() => {
+    clearInterval(vadRef.current)
+    clearTimeout(noSpeechRef.current)
+    vadRef.current    = null
+    noSpeechRef.current = null
+    if (!mediaRef.current) return
+    mediaRef.current.stop()
+    mediaRef.current = null
+    setIsRecording(false)
+  }, [])
+
+  // Manual hold-to-talk recording (no VAD)
+  const startRecording = useCallback(async () => {
+    unlockAudio()
+    if (mediaRef.current || !wsRef.current) return
+    try {
+      const stream   = await navigator.mediaDevices.getUserMedia({ audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true })
+      const mimeType = getMimeType()
+      const rec      = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      chunksRef.current = []
+
+      rec.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        const type = mimeType || 'audio/webm'
+        const blob = new Blob(chunksRef.current, { type })
+        blob.arrayBuffer().then(buf => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'audio_meta', mimeType: type }))
+            wsRef.current.send(buf)
+          }
+        })
+        stream.getTracks().forEach(t => t.stop())
+      }
+
+      rec.start()
+      mediaRef.current = rec
+      setIsRecording(true)
+    } catch (e) {
+      console.error('Mic error:', e)
+    }
+  }, [unlockAudio])
+
+  // Define cross-referencing functions on cb.current (updated each render)
+  cb.current.stopWakeWord = () => {
+    wakeActiveRef.current = false
+    setWakeActive(false)
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort() } catch {}
+      recognitionRef.current = null
+    }
+  }
+
+  cb.current.exitConversation = () => {
+    convActiveRef.current = false
+    setConvActive(false)
+    clearInterval(vadRef.current)
+    clearTimeout(noSpeechRef.current)
+    vadRef.current      = null
+    noSpeechRef.current = null
+    if (mediaRef.current) {
+      try { mediaRef.current.stop() } catch {}
+      mediaRef.current = null
+    }
+    setIsRecording(false)
+    // Return to wake word mode after a short pause
+    setTimeout(() => cb.current.startWakeWord(), 400)
+  }
+
+  cb.current.startVADRecording = async () => {
+    unlockAudio()
+    if (mediaRef.current || !wsRef.current || !convActiveRef.current) return
+    try {
+      const stream   = await navigator.mediaDevices.getUserMedia({ audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true })
+      const mimeType = getMimeType()
+      const rec      = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      chunksRef.current = []
+
+      // Silence detection via time-domain RMS
+      const audioCtx   = getAudioCtx()
+      const source     = audioCtx.createMediaStreamSource(stream)
+      const analyser   = audioCtx.createAnalyser()
+      analyser.fftSize = 512
+      source.connect(analyser)
+      const buf        = new Uint8Array(analyser.frequencyBinCount)
+
+      let hasSpeech    = false
+      let speechStart  = null   // when speech first began
+      let silenceStart = null
+
+      // If user never speaks, exit conversation after NO_SPEECH_MS
+      noSpeechRef.current = setTimeout(() => {
+        if (!hasSpeech) cb.current.exitConversation()
+      }, NO_SPEECH_MS)
+
+      vadRef.current = setInterval(() => {
+        analyser.getByteTimeDomainData(buf)
+        const rms = Math.sqrt(buf.reduce((s, v) => s + (v - 128) ** 2, 0) / buf.length)
+
+        if (rms > SILENCE_RMS) {
+          // Speech detected
+          if (!speechStart) speechStart = Date.now()
+          hasSpeech    = true
+          silenceStart = null
+          clearTimeout(noSpeechRef.current)
+          noSpeechRef.current = null
+        } else if (hasSpeech && speechStart && Date.now() - speechStart > MIN_SPEECH_MS) {
+          // Only start silence countdown after MIN_SPEECH_MS of actual speech
+          if (!silenceStart) {
+            silenceStart = Date.now()
+          } else if (Date.now() - silenceStart > SILENCE_MS) {
+            clearInterval(vadRef.current)
+            vadRef.current = null
+            if (mediaRef.current) {
+              mediaRef.current.stop()
+              mediaRef.current = null
+              setIsRecording(false)
+            }
+          }
+        }
+      }, 80)
+
+      rec.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = () => {
+        clearInterval(vadRef.current)
+        clearTimeout(noSpeechRef.current)
+        vadRef.current      = null
+        noSpeechRef.current = null
+        const type = mimeType || 'audio/webm'
+        const blob = new Blob(chunksRef.current, { type })
+        blob.arrayBuffer().then(arrayBuf => {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'audio_meta', mimeType: type }))
+            wsRef.current.send(arrayBuf)
+          }
+        })
+        stream.getTracks().forEach(t => t.stop())
+      }
+
+      rec.start()
+      mediaRef.current = rec
+      setIsRecording(true)
+    } catch (e) {
+      console.error('VAD mic error:', e)
+    }
+  }
+
+  cb.current.enterConversation = () => {
+    cb.current.stopWakeWord()
+    convActiveRef.current = true
+    setConvActive(true)
+    setTimeout(() => cb.current.startVADRecording(), 300)
+  }
+
+  cb.current.startWakeWord = () => {
+    if (wakeActiveRef.current) return
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SR) return  // Firefox — fall back to manual button
+
+    wakeActiveRef.current = true
+    setWakeActive(true)
+
+    const tryStart = () => {
+      if (!wakeActiveRef.current) return
+
+      const recognition = new SR()
+      recognition.continuous      = false   // fresh instance each cycle — more reliable than reusing
+      recognition.interimResults  = false   // final results only — much more accurate
+      recognition.lang            = 'en-AU' // Australian English to match Ky's accent
+      recognition.maxAlternatives = 5       // check multiple recognition candidates
+
+      recognitionRef.current = recognition
+
+      recognition.onresult = (e) => {
+        for (let i = 0; i < e.results.length; i++) {
+          for (let j = 0; j < e.results[i].length; j++) {
+            const t = e.results[i][j].transcript.toLowerCase().trim()
+            // Match "tina" or common mishearings (Gina, Dina, Tena, Teena)
+            if (/\b(tina|teena|tena|gina|dina|kina)\b/.test(t)) {
+              recognitionRef.current = null
+              wakeActiveRef.current  = false
+              setWakeActive(false)
+              setTimeout(() => cb.current.enterConversation(), 400)
+              return
+            }
+          }
+        }
+      }
+
+      // Restart with a fresh instance on end — avoids stale-state bugs in Chrome
+      recognition.onend = () => {
+        if (wakeActiveRef.current) setTimeout(tryStart, 150)
+      }
+
+      recognition.onerror = (e) => {
+        if (e.error === 'not-allowed') {
+          wakeActiveRef.current = false
+          setWakeActive(false)
+          return
+        }
+        // network/aborted/no-speech errors — just restart
+        if (wakeActiveRef.current) setTimeout(tryStart, 500)
+      }
+
+      try { recognition.start() } catch { if (wakeActiveRef.current) setTimeout(tryStart, 500) }
+    }
+
+    tryStart()
+  }
+
+  // Stable wrappers for components to call
+  const enterConversation = useCallback(() => cb.current.enterConversation(), [])
+  const exitConversation  = useCallback(() => cb.current.exitConversation(),  [])
+  const startWakeWord     = useCallback(() => cb.current.startWakeWord(),     [])
+
   const connect = useCallback(() => {
     if (wsRef.current) return
     const ws = new WebSocket(WS_URL)
@@ -127,6 +395,8 @@ export function useTina() {
       setConnected(true)
       nextStartTimeRef.current = 0
       showAlert('tina online', 'tool')
+      // Start wake word detection automatically on connect
+      setTimeout(() => cb.current.startWakeWord(), 800)
     }
 
     ws.onmessage = async e => {
@@ -137,12 +407,17 @@ export function useTina() {
           if (data.state === 'listening') {
             setActiveAgent(null)
             activeAgentKeyRef.current = backgroundAgentKeyRef.current
-            setAgentStatuses(prev => ({
-              ...prev,
-              tina: { ...prev.tina, status: 'listening', tool: null },
-              research: prev.research.status === 'running' ? prev.research : { ...prev.research, status: 'idle', tool: null },
-              coding:   prev.coding.status   === 'running' ? prev.coding   : { ...prev.coding,   status: 'idle', tool: null },
-            }))
+            setAgentStatuses(prev => {
+              const next = { ...prev, tina: { ...prev.tina, status: 'listening', tool: null } }
+              for (const key of Object.keys(next)) {
+                if (key !== 'tina' && next[key].status !== 'running') {
+                  next[key] = { ...next[key], status: 'idle', tool: null }
+                }
+              }
+              return next
+            })
+            // VAD is started in audio_end (after audio finishes), not here —
+            // the backend sends 'listening' before the browser has finished playing.
           } else {
             setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, status: data.state, tool: prev.tina.tool } }))
           }
@@ -182,22 +457,33 @@ export function useTina() {
           }))
           setPanels(prev => prev.filter(p => p.id !== `agent-${key}`))
           if (data.summary) setLastResponse(`${data.display} finished:\n\n${data.summary}`)
+          // Notify TINA so she knows the agent completed and can chain the next task
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            const note = `[SYSTEM:agent_done] agent=${data.agent} display=${data.display} task_complete=true`
+            wsRef.current.send(JSON.stringify({ type: 'message', text: note }))
+          }
           break
         }
         case 'agent_done':
           setActiveAgent(null)
           activeAgentKeyRef.current = null
-          setAgentStatuses(prev => ({
-            ...prev,
-            tina: { ...prev.tina, tool: null },
-            research: { ...prev.research, status: 'idle', tool: null },
-            coding:   { ...prev.coding,   status: 'idle', tool: null },
-          }))
+          setAgentStatuses(prev => {
+            const next = { ...prev, tina: { ...prev.tina, tool: null } }
+            for (const key of Object.keys(next)) {
+              if (key !== 'tina') next[key] = { ...next[key], status: 'idle', tool: null }
+            }
+            return next
+          })
           break
         case 'heard':
           addLine('kai', data.text)
           setLastResponse(null)
           setTurnCount(c => c + 1)
+          // Entering conversation via button (not wake word) still sets convActive
+          if (!convActiveRef.current) {
+            convActiveRef.current = true
+            setConvActive(true)
+          }
           break
         case 'response':
           addLine('tina', data.text)
@@ -214,6 +500,10 @@ export function useTina() {
             nextStartTimeRef.current = 0
             if (wsRef.current?.readyState === WebSocket.OPEN)
               wsRef.current.send(JSON.stringify({ type: 'audio_done' }))
+            // Audio is fully done playing — safe to start listening now
+            if (convActiveRef.current && !mediaRef.current) {
+              setTimeout(() => cb.current.startVADRecording(), 500)
+            }
           }, delay * 1000 + 150)
           break
         }
@@ -259,6 +549,15 @@ export function useTina() {
         case 'diag_complete':
           setDiagRunning(false)
           break
+        case 'featured_panel':
+          setFeaturedPanels(prev => [...prev, { ...data }].slice(0, 6))
+          break
+        case 'morning_routine_start':
+          setMorningActive(true)
+          break
+        case 'morning_routine_end':
+          setMorningActive(false)
+          break
         case 'prefs':
           if (data.data?.activity_log !== undefined)
             setActivityLogVisible(data.data.activity_log)
@@ -281,6 +580,10 @@ export function useTina() {
       setConnected(false)
       setTinaState('offline')
       showAlert('tina offline', 'offline')
+      // Stop wake word + conversation on disconnect
+      cb.current.stopWakeWord?.()
+      convActiveRef.current = false
+      setConvActive(false)
       setTimeout(connect, RECONNECT_MS)
     }
 
@@ -298,61 +601,15 @@ export function useTina() {
     }
   }, [connect])
 
-  const unlockAudio = useCallback(() => {
-    const ctx = getAudioCtx()
-    if (ctx.state === 'suspended') ctx.resume()
-  }, [getAudioCtx])
-
-  const sendMessage = useCallback(text => {
-    unlockAudio()
-    if (wsRef.current?.readyState === WebSocket.OPEN)
-      wsRef.current.send(JSON.stringify({ type: 'message', text }))
-  }, [unlockAudio])
-
-  const startRecording = useCallback(async () => {
-    unlockAudio()
-    if (mediaRef.current || !wsRef.current) return
-    try {
-      const stream   = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mimeType = getMimeType()
-      const rec      = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-      chunksRef.current = []
-
-      rec.ondataavailable = e => { if (e.data.size > 0) chunksRef.current.push(e.data) }
-      rec.onstop = () => {
-        const type = mimeType || 'audio/webm'
-        const blob = new Blob(chunksRef.current, { type })
-        blob.arrayBuffer().then(buf => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            // Tell backend the exact MIME type before sending binary
-            wsRef.current.send(JSON.stringify({ type: 'audio_meta', mimeType: type }))
-            wsRef.current.send(buf)
-          }
-        })
-        stream.getTracks().forEach(t => t.stop())
-      }
-
-      rec.start()
-      mediaRef.current = rec
-      setIsRecording(true)
-    } catch (e) {
-      console.error('Mic error:', e)
-    }
-  }, [])
-
-  const stopRecording = useCallback(() => {
-    if (!mediaRef.current) return
-    mediaRef.current.stop()
-    mediaRef.current = null
-    setIsRecording(false)
-  }, [])
-
   return {
     connected, tinaState, isRecording, activeAgent, conversation,
     stats, voice, user, lastTool, alert, lastResponse,
-    services, turnCount, sessionStart, agentStatuses,
+    services, pipeline, turnCount, sessionStart, agentStatuses,
     diagRunning, diagResults, codePreviewFiles,
-    panels, dismissPanel, activityLogVisible,
+    panels, dismissPanel, featuredPanels, dismissFeaturedPanel,
+    morningActive, activityLogVisible,
+    wakeActive, convActive,
     sendMessage, startRecording, stopRecording,
+    enterConversation, exitConversation, startWakeWord,
   }
 }

@@ -1,13 +1,11 @@
 """Launch TINA backend + frontend from a single terminal. Ctrl+C stops both."""
 import asyncio
-import json as _json
 import os
 import signal
 import subprocess
 import sys
 import time
 import threading
-import urllib.request
 
 # Force UTF-8 so Tina's responses (with emojis etc.) print correctly on Windows
 if hasattr(sys.stdout, 'reconfigure'):
@@ -53,31 +51,6 @@ def _read_crash_logs(lines: int = 120) -> str:
     return "".join(recent)
 
 
-# ── Slack (direct HTTP — backend may be down) ─────────────────────────────────
-
-def _slack_notify(msg: str) -> None:
-    """Post directly to Slack without the FastAPI bot layer."""
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(os.path.join(ROOT, ".env"))
-    except ImportError:
-        pass
-    token   = os.getenv("SLACK_TINA_BOT_TOKEN", "")
-    channel = os.getenv("SLACK_CHANNEL_AGENTS", "#agents")
-    if not token:
-        return
-    payload = _json.dumps({"channel": channel, "text": msg}).encode()
-    req = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=payload,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    )
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
-        print(f"  [TINA] Slack notify failed: {e}")
-
-
 # ── Sam crash-fix invocation ──────────────────────────────────────────────────
 
 async def _invoke_sam(crash_logs: str) -> None:
@@ -106,19 +79,15 @@ async def _invoke_sam(crash_logs: str) -> None:
         result = await sam.run(task)
         summary = result[:300] + "..." if len(result) > 300 else result
         print(f"  [TINA] Sam's fix applied:\n  {summary}\n")
-        _slack_notify(f":wrench: Sam diagnosed and fixed a crash loop. Restarting now.\n\n_{summary}_")
     except Exception as e:
         print(f"  [TINA] Sam diagnosis failed: {e}")
-        _slack_notify(f":sos: Backend is in a crash loop and Sam couldn't auto-fix it: {e}\nManual intervention needed.")
+        print(f"  [TINA] Manual intervention needed — backend is in a crash loop.")
 
 
 def _handle_crash_loop() -> None:
     """Called from the supervisor thread — runs Sam synchronously via asyncio.run()."""
     crash_logs = _read_crash_logs()
-    _slack_notify(
-        ":rotating_light: TINA backend crash loop detected (3 crashes in 2 min). "
-        "Calling Sam to diagnose..."
-    )
+    print("  [TINA] Crash loop detected — calling Sam to diagnose and fix...")
     asyncio.run(_invoke_sam(crash_logs))
 
 

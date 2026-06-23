@@ -44,13 +44,40 @@ DEFINITIONS = [
     },
     {
         "name":        "fs_read",
-        "description": "Read the contents of a file. Large files are truncated at 10 000 chars.",
+        "description": (
+            "Read the contents of a file. Returns up to 10 000 chars by default. "
+            "For large files, use offset and limit to read in chunks. "
+            "offset is the line number to start from (1-indexed). "
+            "limit is the maximum number of lines to return (default: all remaining up to 10 000 chars). "
+            "The response tells you how many lines the file has so you know whether to read more chunks."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Absolute path to the file."},
+                "path":   {"type": "string",  "description": "Absolute path to the file."},
+                "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed). Default: 1."},
+                "limit":  {"type": "integer", "description": "Maximum number of lines to read. Default: all remaining."},
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name":        "fs_patch",
+        "description": (
+            "Make a targeted edit to a file by replacing an exact string. "
+            "old_string must appear exactly once in the file — provide enough surrounding context to make it unique. "
+            "Use this instead of fs_write when you only need to change part of a file. "
+            "Set replace_all=true to replace every occurrence (useful for renaming a variable throughout a file)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":        {"type": "string",  "description": "Absolute path to the file to edit."},
+                "old_string":  {"type": "string",  "description": "Exact string to find and replace. Must be unique in the file unless replace_all is true."},
+                "new_string":  {"type": "string",  "description": "String to replace it with."},
+                "replace_all": {"type": "boolean", "description": "If true, replace every occurrence. Default: false (errors if not unique)."},
+            },
+            "required": ["path", "old_string", "new_string"],
         },
     },
     {
@@ -117,19 +144,62 @@ def handle(name: str, inputs: dict) -> str:
             return f"Error listing {path}: {e}"
 
     if name == "fs_read":
-        path = inputs.get("path", "")
+        path   = inputs.get("path", "")
+        offset = max(1, int(inputs.get("offset", 1)))
+        limit  = inputs.get("limit", None)
         try:
             if not os.path.exists(path):
                 return f"File not found: {path}"
             if os.path.isdir(path):
                 return f"That's a directory — use fs_list instead: {path}"
             with open(path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            if len(content) > 10_000:
-                return content[:10_000] + f"\n\n...(truncated — {len(content):,} chars total, read the rest in chunks)"
-            return content
+                all_lines = f.readlines()
+            total = len(all_lines)
+            start = offset - 1  # convert to 0-indexed
+            chunk = all_lines[start:start + limit] if limit else all_lines[start:]
+            # Cap at 10 000 chars to avoid overwhelming the model context
+            text = "".join(chunk)
+            end_line = start + len(chunk)
+            header = f"[Lines {offset}–{end_line} of {total}]\n"
+            if len(text) > 10_000:
+                # Trim to char limit and recalculate end line
+                text = text[:10_000]
+                trimmed_lines = text.count("\n")
+                end_line = start + trimmed_lines
+                header = f"[Lines {offset}–{end_line} of {total} — char limit reached]\n"
+                suffix = f"\n\n...(truncated at 10 000 chars — use offset={end_line + 1} to continue)"
+                return header + text + suffix
+            return header + text
         except Exception as e:
             return f"Error reading {path}: {e}"
+
+    if name == "fs_patch":
+        path        = inputs.get("path", "")
+        old_string  = inputs.get("old_string", "")
+        new_string  = inputs.get("new_string", "")
+        replace_all = inputs.get("replace_all", False)
+        try:
+            if not os.path.exists(path):
+                return f"File not found: {path}"
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            count = content.count(old_string)
+            if count == 0:
+                return f"old_string not found in {path} — check the exact text and whitespace."
+            if not replace_all and count > 1:
+                return (
+                    f"old_string appears {count} times in {path}. "
+                    "Provide more surrounding context to make it unique, or set replace_all=true."
+                )
+            updated = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            replaced = count if replace_all else 1
+            print(f"[fs_patch] {path} — replaced {replaced} occurrence(s)")
+            _preview_queue.put_nowait({"path": path, "content": updated})
+            return f"Patched: {path} ({replaced} replacement(s))"
+        except Exception as e:
+            return f"Error patching {path}: {e}"
 
     if name == "fs_write":
         path    = inputs.get("path", "")

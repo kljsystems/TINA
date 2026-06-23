@@ -134,7 +134,9 @@ async def load_recent_tasks(agent: str, limit: int = 8) -> str:
             pair   = sessions[sid]
             task   = pair.get("user", "")
             result = pair.get("assistant", "")
-            if task and result:
+            # Skip incomplete/failed runs — short results mean the agent crashed or
+            # gave up, and injecting them as "completed work" poisons the next run.
+            if task and result and len(result.strip()) >= 100:
                 result_preview = result[:300] + "..." if len(result) > 300 else result
                 summaries.append(f"Task: {task[:200]}\nResult: {result_preview}")
 

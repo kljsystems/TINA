@@ -142,25 +142,52 @@ async def _schedule_nightly_reindex():
 
 
 async def _run_morning_briefing():
-    """Gather live data and deliver Tina's spoken morning briefing via TTS."""
-    from datetime import date
+    """Morning routine: open calendar, send popup cards for each data source, then speak a briefing."""
+    from datetime import date, timedelta
     from config import PENDING_TASKS_DIR
+    import uuid as _uuid
+    import time as _time
 
     today     = date.today()
     today_str = today.strftime("%A, %d %B %Y")
     today_iso = today.isoformat()
     sections  = []
 
-    # Weather
+    await broadcast({"type": "morning_routine_start"})
+    print(f"[briefing] morning routine starting — {today_str}")
+
+    # Helper: send a dashboard popup card
+    async def _popup(title: str, content: str, color: str = "#8B5CF6", ttl: int = 90000):
+        await broadcast({
+            "type":    "featured_panel",
+            "id":      str(_uuid.uuid4()),
+            "title":   title,
+            "content": content,
+            "color":   color,
+            "ttl":     ttl,
+            "ts":      int(_time.time() * 1000),
+        })
+
+    # 1. Open Google Calendar in the browser immediately
+    try:
+        import webbrowser
+        webbrowser.open("https://calendar.google.com")
+        print("[briefing] opened calendar in browser")
+    except Exception as e:
+        print(f"[briefing] browser open failed: {e}")
+
+    # 2. Weather
     try:
         w = await asyncio.to_thread(
             _DIRECT_HANDLERS["get_weather"], "get_weather", {"location": "Sydney"}
         )
-        sections.append(f"WEATHER:\n{w}")
+        w_str = str(w)[:380]
+        sections.append(f"WEATHER:\n{w_str}")
+        await _popup("WEATHER", w_str, color="#38bdf8")
     except Exception as e:
         print(f"[briefing] weather: {e}")
 
-    # Today's calendar events
+    # 3. Today's calendar events
     try:
         cal = await asyncio.to_thread(
             _DIRECT_HANDLERS["list_events"], "list_events", {
@@ -169,55 +196,77 @@ async def _run_morning_briefing():
                 "max_results": 10,
             }
         )
-        sections.append(f"CALENDAR — {today_str}:\n{cal}")
+        cal_str = str(cal)[:380]
+        sections.append(f"CALENDAR — {today_str}:\n{cal_str}")
+        await _popup(
+            "TODAY",
+            cal_str if "no events" not in cal_str.lower() else "No events scheduled today.",
+            color="#60a5fa",
+        )
     except Exception as e:
         print(f"[briefing] calendar: {e}")
 
-    # Pending agent tasks still on disk
+    # 4. Stripe MRR + revenue
+    try:
+        from tools.stripe_tool import handle as _stripe_handle
+        stripe_raw = await asyncio.to_thread(_stripe_handle, "stripe_overview", {})
+        if stripe_raw and "not configured" not in str(stripe_raw).lower():
+            stripe_str = str(stripe_raw)[:380]
+            sections.append(f"STRIPE:\n{stripe_str}")
+            await _popup("REVENUE", stripe_str, color="#4ade80")
+    except Exception as e:
+        print(f"[briefing] stripe: {e}")
+
+    # 5. KAOS platform health
+    try:
+        from tools.kaos_tool import _kaos_overview
+        kaos = await asyncio.to_thread(_kaos_overview)
+        if kaos and "not configured" not in str(kaos).lower():
+            kaos_str = str(kaos)[:380]
+            sections.append(f"KAOS:\n{kaos_str}")
+            # Colour based on content: red if errors/issues, amber if warnings, green if healthy
+            kaos_color = "#ef4444" if any(w in kaos_str.lower() for w in ("error", "critical", "down")) \
+                else "#f59e0b" if any(w in kaos_str.lower() for w in ("warning", "ticket", "issue")) \
+                else "#4ade80"
+            await _popup("KAOS", kaos_str, color=kaos_color)
+    except Exception as e:
+        print(f"[briefing] kaos: {e}")
+
+    # 6. Pending agent tasks
     try:
         if os.path.isdir(PENDING_TASKS_DIR):
             pending = [f for f in os.listdir(PENDING_TASKS_DIR) if f.endswith(".json")]
             if pending:
                 lines = []
-                for fname in pending[:5]:
+                for fname in pending[:6]:
                     try:
                         with open(os.path.join(PENDING_TASKS_DIR, fname)) as f:
                             spec = _json.load(f)
-                        lines.append(f"  • {spec.get('agent_key','?')}: {spec.get('task','')[:80]}")
+                        lines.append(f"• {spec.get('agent_key','?').upper()}: {spec.get('task','')[:70]}")
                     except Exception:
                         pass
                 if lines:
-                    sections.append("PENDING AGENT TASKS:\n" + "\n".join(lines))
+                    task_str = "\n".join(lines)
+                    sections.append("PENDING TASKS:\n" + task_str)
+                    await _popup("PENDING", task_str, color="#a78bfa")
     except Exception as e:
         print(f"[briefing] pending tasks: {e}")
 
-    # Vault — urgent / priority / deadline notes
+    # 7. Vault — urgent / flagged notes
     try:
         v = await asyncio.to_thread(
             _DIRECT_HANDLERS["vault_search"], "vault_search",
-            {"query": "urgent priority deadline today"}
+            {"query": "urgent priority deadline today action required"}
         )
         if v and "no results" not in str(v).lower() and "not configured" not in str(v).lower():
-            sections.append(f"VAULT — FLAGGED:\n{str(v)[:500]}")
+            sections.append(f"VAULT — FLAGGED:\n{str(v)[:400]}")
     except Exception as e:
         print(f"[briefing] vault: {e}")
 
-    # Vault — upcoming follow-ups and next steps flagged by agents
+    # 8. Tomorrow's calendar
     try:
-        v2 = await asyncio.to_thread(
-            _DIRECT_HANDLERS["vault_search"], "vault_search",
-            {"query": "follow-up next steps action required todo"}
-        )
-        if v2 and "no results" not in str(v2).lower() and "not configured" not in str(v2).lower():
-            sections.append(f"VAULT — FOLLOW-UPS:\n{str(v2)[:400]}")
-    except Exception as e:
-        print(f"[briefing] vault follow-ups: {e}")
-
-    # Tomorrow's calendar events (for forward-looking priority)
-    try:
-        from datetime import date, timedelta
-        tomorrow     = (today + timedelta(days=1)).isoformat()
-        day_after    = (today + timedelta(days=2)).isoformat()
+        tomorrow  = (today + timedelta(days=1)).isoformat()
+        day_after = (today + timedelta(days=2)).isoformat()
         cal2 = await asyncio.to_thread(
             _DIRECT_HANDLERS["list_events"], "list_events", {
                 "time_min": f"{tomorrow}T00:00:00",
@@ -230,47 +279,35 @@ async def _run_morning_briefing():
     except Exception as e:
         print(f"[briefing] tomorrow calendar: {e}")
 
-    # KAOS — developer health check
-    try:
-        from tools.kaos_tool import _kaos_overview
-        kaos = await asyncio.to_thread(_kaos_overview)
-        if kaos and "not configured" not in kaos:
-            sections.append(f"KAOS:\n{kaos}")
-    except Exception as e:
-        print(f"[briefing] kaos: {e}")
-
-    # Ask Claude to synthesise a natural spoken briefing with prioritised action list
+    # Synthesise spoken briefing from all gathered data
     data_block = f"Today is {today_str}.\n\n" + "\n\n".join(sections)
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp   = await client.messages.create(
             model=ORCHESTRATOR_MODEL,
-            max_tokens=450,
+            max_tokens=400,
             system=(
                 "You are TINA giving Ky his morning briefing. "
                 "Write a natural spoken summary — plain prose only, no markdown, no bullet points, no headers. "
-                "Be warm and direct. Cover: weather, what's on the calendar today and tomorrow, any pending agent work, any follow-ups flagged in the vault. "
-                "If the calendar is empty, say so. "
-                "End with a prioritised focus list: say 'Your top priorities today are' then list 3 to 5 specific actions ranked by urgency, in plain spoken sentences. "
-                "Keep the whole thing under 150 words. Start with 'Good morning Ky.'"
+                "Be warm and direct. Cover weather, today's calendar, revenue snapshot, KAOS status, and any pending work. "
+                "If calendar is empty, say so. "
+                "End with: 'Your top priorities today are' then 3 specific actions ranked by urgency. "
+                "Under 130 words total. Start with 'Good morning Ky.'"
             ),
             messages=[{"role": "user", "content": data_block}],
         )
         briefing = next((b.text for b in resp.content if hasattr(b, "text")), "")
     except Exception as e:
         print(f"[briefing] synthesis failed: {e}")
-        briefing = f"Good morning Ky. Today is {today_str}. I had trouble pulling the full briefing — check the dashboard for anything urgent."
+        briefing = f"Good morning Ky. Today is {today_str}. Check the dashboard cards for your data — I had trouble synthesising the full briefing."
 
-    if not briefing.strip():
-        return
+    if briefing.strip():
+        print(f"[briefing] {briefing}")
+        await broadcast({"type": "response", "text": briefing})
+        await _tts_stream(briefing)
 
-    print(f"[briefing] {briefing}")
-
-    # Speak it
-    await broadcast({"type": "response", "text": briefing})
-    await _tts_stream(briefing)
-
-    print(f"[briefing] delivered for {today_str}")
+    await broadcast({"type": "morning_routine_end"})
+    print(f"[briefing] complete — {today_str}")
 
 
 async def _run_startup_briefing():
@@ -720,7 +757,26 @@ async def _run_kaos_monitor():
 
     try:
         alerts = await asyncio.to_thread(_check)
+        import uuid as _uuid, time as _time
         for alert in alerts:
+            lower = alert.lower()
+            color = (
+                "#ef4444" if any(w in lower for w in ("error", "fatal", "sentry", "cancelled", "canceled", "dispute"))
+                else "#4ade80" if any(w in lower for w in ("activated", "paying", "trial started"))
+                else "#60a5fa" if "waitlist" in lower
+                else "#f59e0b"
+            )
+            title = (
+                "KAOS ERROR"    if any(w in lower for w in ("error", "fatal", "sentry"))
+                else "KAOS REVENUE" if any(w in lower for w in ("activated", "paying"))
+                else "CANCELLATION" if any(w in lower for w in ("cancelled", "canceled"))
+                else "KAOS"
+            )
+            await broadcast({
+                "type": "featured_panel", "id": str(_uuid.uuid4()),
+                "title": title, "content": alert[:380],
+                "color": color, "ttl": 90000, "ts": int(_time.time() * 1000),
+            })
             print(f"[kaos-monitor] {alert}")
             await broadcast({"type": "response", "text": alert})
             await _tts_stream(alert)
@@ -738,6 +794,109 @@ async def _schedule_kaos_monitor():
         except Exception as e:
             print(f"[kaos-monitor] scheduler error: {e}")
         await asyncio.sleep(900)  # 15 minutes
+
+
+async def _run_stripe_monitor():
+    """Check Stripe for failed charges, new subscriptions, cancellations, and disputes."""
+    from config import STRIPE_SECRET_KEY
+    if not STRIPE_SECRET_KEY:
+        return
+
+    _STATE_FILE = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "stripe_last_check.txt"
+    ))
+
+    import time as _time
+    now_ts  = int(_time.time())
+    last_ts = now_ts - 1800  # default: last 30 minutes
+    if os.path.exists(_STATE_FILE):
+        try:
+            last_ts = int(open(_STATE_FILE).read().strip())
+        except Exception:
+            pass
+
+    def _check():
+        import stripe as _stripe
+        _stripe.api_key = STRIPE_SECRET_KEY
+        alerts = []
+        try:
+            events = _stripe.Event.list(
+                created={"gt": last_ts},
+                types=[
+                    "charge.failed",
+                    "invoice.payment_failed",
+                    "customer.subscription.created",
+                    "customer.subscription.deleted",
+                    "charge.dispute.created",
+                ],
+                limit=25,
+            )
+        except Exception as e:
+            print(f"[stripe-monitor] API error: {e}")
+            return alerts
+
+        for event in events.auto_paging_iter():
+            obj   = event.get("data", {}).get("object", {})
+            etype = event["type"]
+
+            if etype == "charge.failed":
+                amount = obj.get("amount", 0) / 100
+                email  = (obj.get("billing_details") or {}).get("email") or "unknown"
+                alerts.append(("CHARGE FAILED", f"${amount:.2f} charge failed\n{email}", "#ef4444"))
+
+            elif etype == "invoice.payment_failed":
+                amount = obj.get("amount_due", 0) / 100
+                alerts.append(("PAYMENT FAILED", f"Invoice ${amount:.2f} payment failed", "#ef4444"))
+
+            elif etype == "customer.subscription.created":
+                items   = (obj.get("items") or {}).get("data") or [{}]
+                price   = (items[0].get("price") or {})
+                plan    = price.get("nickname") or price.get("id") or "plan"
+                amount  = price.get("unit_amount", 0) / 100
+                alerts.append(("NEW SUBSCRIBER", f"New subscription: {plan}\n${amount:.2f}/mo", "#4ade80"))
+
+            elif etype == "customer.subscription.deleted":
+                items  = (obj.get("items") or {}).get("data") or [{}]
+                price  = (items[0].get("price") or {})
+                plan   = price.get("nickname") or price.get("id") or "plan"
+                alerts.append(("CANCELLATION", f"Subscription cancelled: {plan}", "#f59e0b"))
+
+            elif etype == "charge.dispute.created":
+                amount = obj.get("amount", 0) / 100
+                alerts.append(("DISPUTE", f"Chargeback dispute opened\n${amount:.2f}", "#ef4444"))
+
+        return alerts
+
+    try:
+        alerts = await asyncio.to_thread(_check)
+        import uuid as _uuid, time as _time2
+        for title, content, color in alerts:
+            print(f"[stripe-monitor] {title}: {content[:80]}")
+            await broadcast({
+                "type": "featured_panel", "id": str(_uuid.uuid4()),
+                "title": title, "content": content,
+                "color": color, "ttl": 120000, "ts": int(_time2.time() * 1000),
+            })
+            if color == "#ef4444":
+                msg = f"Stripe alert: {content.replace(chr(10), '. ')}"
+                await broadcast({"type": "response", "text": msg})
+                await _tts_stream(msg)
+            await _slack_post(f":credit_card: *STRIPE* — {content.replace(chr(10), ' — ')}")
+        with open(_STATE_FILE, "w") as f:
+            f.write(str(now_ts))
+    except Exception as e:
+        print(f"[stripe-monitor] error: {e}")
+
+
+async def _schedule_stripe_monitor():
+    """Check Stripe every 30 minutes for payment events."""
+    await asyncio.sleep(240)
+    while True:
+        try:
+            await _run_stripe_monitor()
+        except Exception as e:
+            print(f"[stripe-monitor] scheduler error: {e}")
+        await asyncio.sleep(1800)  # 30 minutes
 
 
 async def _run_pattern_scan():
@@ -906,6 +1065,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_schedule_email_triage())
     asyncio.create_task(_schedule_inbox_pipeline())
     asyncio.create_task(_schedule_kaos_monitor())
+    asyncio.create_task(_schedule_stripe_monitor())
     asyncio.create_task(_schedule_pattern_scan())
     asyncio.create_task(_start_slack_listener())
     yield
@@ -1295,6 +1455,19 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
             await broadcast({"type": "response", "text": verbal_summary})
             asyncio.create_task(_tts_stream(verbal_summary))
             asyncio.create_task(_slack_post(f"*{display}* — {verbal_summary}"))
+            # Proactive popup for email triage — surface urgent items immediately
+            if agent_key == "email":
+                import uuid as _uuid, time as _time
+                _lower = result.lower()
+                _urgent = "urgent" in _lower
+                _title  = "URGENT EMAIL" if _urgent else "EMAIL TRIAGE"
+                _color  = "#ef4444"    if _urgent else "#60a5fa"
+                _ttl    = 120000       if _urgent else 60000
+                await broadcast({
+                    "type": "featured_panel", "id": str(_uuid.uuid4()),
+                    "title": _title, "content": verbal_summary[:380],
+                    "color": _color, "ttl": _ttl, "ts": int(_time.time() * 1000),
+                })
         else:
             issue_summary = f"{display} ran into an issue: {verify_msg}"
             await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Issue: {verify_msg}"})
@@ -1618,14 +1791,81 @@ async def promote_project_endpoint(project_name: str):
 
 @app.get("/api/status")
 async def get_status():
-    from config import DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY, OPENWEATHER_API_KEY
+    from config import DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY, OPENWEATHER_API_KEY, SLACK_TINA_BOT_TOKEN
     return {
         "deepgram":    bool(DEEPGRAM_API_KEY),
         "elevenlabs":  bool(ELEVENLABS_API_KEY),
         "github":      bool(GITHUB_TOKEN),
         "tavily":      bool(TAVILY_API_KEY),
         "weather":     bool(OPENWEATHER_API_KEY),
+        "slack":       bool(SLACK_TINA_BOT_TOKEN),
     }
+
+
+@app.post("/api/broadcast-panel")
+async def broadcast_panel(payload: dict):
+    """Push a featured data panel to all connected dashboard clients."""
+    await broadcast({"type": "featured_panel", **payload})
+    return {"ok": True}
+
+
+@app.get("/api/pipeline")
+async def get_pipeline():
+    """Return project pipeline state — inbox, proposed, and active projects."""
+    from pathlib import Path
+    from config import VAULT_DIR
+
+    inbox_dir    = Path(VAULT_DIR) / "00-Inbox"
+    proposed_dir = Path(VAULT_DIR) / "01-Projects" / "Proposed"
+    active_dir   = Path(VAULT_DIR) / "01-Projects"
+
+    def _title_from_md(path: Path) -> str:
+        try:
+            text = path.read_text(encoding="utf-8")
+            if text.startswith("---"):
+                end = text.index("---", 3)
+                for line in text[3:end].splitlines():
+                    if line.lower().startswith("title:"):
+                        return line.split(":", 1)[1].strip().strip("\"'")
+        except Exception:
+            pass
+        return ""
+
+    def _dir_title(d: Path) -> str:
+        for md in ("capture.md", "README.md", "index.md"):
+            t = _title_from_md(d / md)
+            if t:
+                return t
+        return d.name.replace("-", " ").replace("_", " ").title()
+
+    inbox = []
+    if inbox_dir.exists():
+        for f in sorted(inbox_dir.glob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                text = f.read_text(encoding="utf-8")
+                status = "new"
+                if text.startswith("---"):
+                    end = text.index("---", 3)
+                    for line in text[3:end].splitlines():
+                        if line.lower().startswith("status:"):
+                            status = line.split(":", 1)[1].strip()
+            except Exception:
+                status = "new"
+            inbox.append({"filename": f.name, "status": status})
+
+    proposed = []
+    if proposed_dir.exists():
+        for d in sorted(proposed_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if d.is_dir():
+                proposed.append({"slug": d.name, "title": _dir_title(d)})
+
+    active = []
+    if active_dir.exists():
+        for d in sorted(active_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if d.is_dir() and d.name != "Proposed":
+                active.append({"slug": d.name, "title": _dir_title(d)})
+
+    return {"inbox": inbox, "proposed": proposed, "active": active}
 
 
 @app.post("/api/diagnostics")

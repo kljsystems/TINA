@@ -4,7 +4,8 @@ Updated by main.py as tool calls arrive; read by TinaAgent via get_agent_status.
 """
 from datetime import datetime
 
-_progress: dict = {}
+_progress:  dict = {}
+_completed: dict = {}  # agent_key → {task, finished_at}
 
 
 def start_task(agent_key: str, task: str):
@@ -28,13 +29,29 @@ def record_tool(agent_key: str, tool_name: str, input_summary: str):
 
 
 def end_task(agent_key: str):
-    _progress.pop(agent_key, None)
+    info = _progress.pop(agent_key, None)
+    if info:
+        _completed[agent_key] = {
+            "task":        info["task"],
+            "finished_at": datetime.now(),
+        }
+
+
+def get_all_active() -> dict:
+    """Return a snapshot of all currently running agent tasks (agent_key → info dict)."""
+    return dict(_progress)
 
 
 def get_status(agent_key: str) -> str:
     info = _progress.get(agent_key)
     if not info:
-        return f"No active task for {agent_key}."
+        done = _completed.get(agent_key)
+        if done:
+            elapsed  = int((datetime.now() - done["finished_at"]).total_seconds())
+            mins, secs = divmod(elapsed, 60)
+            elapsed_str = f"{mins}m {secs}s ago" if mins else f"{secs}s ago"
+            return f"Completed ({elapsed_str}): {done['task'][:200]}"
+        return f"No active task for {agent_key} — either not started yet or completed before this session."
 
     elapsed  = int((datetime.now() - info["started_at"]).total_seconds())
     mins, secs = divmod(elapsed, 60)

@@ -1,5 +1,5 @@
 """
-Diagnose Slack channel membership for all TINA bots and print channel ID fixes.
+Diagnose Slack channel membership for all TINA bots.
 Run: python scripts/slack_channel_fix.py
 """
 import os, sys
@@ -16,70 +16,88 @@ BOTS = {
     "TRISTAN": os.getenv("SLACK_TRISTAN_BOT_TOKEN",  ""),
     "CHARLIE": os.getenv("SLACK_CHARLIE_BOT_TOKEN",  ""),
     "CONNOR":  os.getenv("SLACK_CONNOR_BOT_TOKEN",   ""),
+    "WADE":    os.getenv("SLACK_WADE_BOT_TOKEN",     ""),
 }
 
 TARGETS = {
-    "SLACK_CHANNEL":          (os.getenv("SLACK_CHANNEL",          "#tina").lstrip("#"),    ["TINA"]),
-    "SLACK_CHANNEL_SAM":      (os.getenv("SLACK_CHANNEL_SAM",      "#sam").lstrip("#"),     ["TINA", "SAM"]),
-    "SLACK_CHANNEL_RESEARCH": (os.getenv("SLACK_CHANNEL_RESEARCH", "#research").lstrip("#"),["TINA", "CHARLIE"]),
-    "SLACK_CHANNEL_TRISTAN":  (os.getenv("SLACK_CHANNEL_TRISTAN",  "#email").lstrip("#"),   ["TINA", "TRISTAN"]),
-    "SLACK_CHANNEL_CONNOR":   (os.getenv("SLACK_CHANNEL_CONNOR",   "#data").lstrip("#"),    ["TINA", "CONNOR"]),
-    "SLACK_CHANNEL_AGENTS":   (os.getenv("SLACK_CHANNEL_AGENTS",   "#agents").lstrip("#"),  ["TINA"]),
+    "SLACK_CHANNEL":          (os.getenv("SLACK_CHANNEL",          ""), ["TINA"]),
+    "SLACK_CHANNEL_SAM":      (os.getenv("SLACK_CHANNEL_SAM",      ""), ["TINA", "SAM"]),
+    "SLACK_CHANNEL_RESEARCH": (os.getenv("SLACK_CHANNEL_RESEARCH", ""), ["TINA", "CHARLIE"]),
+    "SLACK_CHANNEL_TRISTAN":  (os.getenv("SLACK_CHANNEL_TRISTAN",  ""), ["TINA", "TRISTAN"]),
+    "SLACK_CHANNEL_CONNOR":   (os.getenv("SLACK_CHANNEL_CONNOR",   ""), ["TINA", "CONNOR"]),
+    "SLACK_CHANNEL_AGENTS":   (os.getenv("SLACK_CHANNEL_AGENTS",   ""), ["TINA"]),
+    "SLACK_CHANNEL_WADE":     (os.getenv("SLACK_CHANNEL_WADE",     ""), ["TINA", "WADE"]),
 }
 
-# Cache membership per token
-_membership = {}
+_channel_cache = {}
 
-def get_membership(label, token):
-    if label in _membership:
-        return _membership[label]
-    if not token:
-        _membership[label] = {}
-        return {}
+def get_channel_info(label, token, channel_val):
+    """Look up channel info by ID or name."""
+    cache_key = f"{label}:{channel_val}"
+    if cache_key in _channel_cache:
+        return _channel_cache[cache_key]
+    if not token or not channel_val:
+        return None
     try:
         c = WebClient(token=token)
-        resp = c.conversations_list(types="public_channel", limit=200)
-        result = {ch["name"]: ch for ch in resp["channels"]}
-        _membership[label] = result
+        # If it looks like a channel ID, use conversations_info
+        if channel_val.startswith(("C", "G", "D")):
+            resp = c.conversations_info(channel=channel_val)
+            ch = resp["channel"]
+            result = {"id": ch["id"], "name": ch["name"], "is_member": ch.get("is_member", False)}
+        else:
+            # Name-based lookup via conversations_list
+            name = channel_val.lstrip("#")
+            resp = c.conversations_list(types="public_channel", limit=200)
+            ch = next((x for x in resp["channels"] if x["name"] == name), None)
+            if not ch:
+                result = None
+            else:
+                result = {"id": ch["id"], "name": ch["name"], "is_member": ch.get("is_member", False)}
+        _channel_cache[cache_key] = result
         return result
     except Exception as e:
-        print(f"  [{label}] conversations_list failed: {e}")
-        _membership[label] = {}
-        return {}
+        _channel_cache[cache_key] = None
+        return None
 
 print("=" * 70)
 print("TINA Slack Channel Audit")
 print("=" * 70)
 
-fixes_needed = []
+missing = []
 
-for env_key, (channel_name, required_bots) in TARGETS.items():
-    current_val = os.getenv(env_key, f"#{channel_name}")
-    print(f"\n#{channel_name}  ({env_key} = {current_val})")
+for env_key, (channel_val, required_bots) in TARGETS.items():
+    if not channel_val:
+        print(f"\n{env_key} = (not set)")
+        continue
 
-    channel_id = None
+    print(f"\n{env_key} = {channel_val}")
+
+    channel_id   = None
+    channel_name = None
+
     for label, token in BOTS.items():
-        membership = get_membership(label, token)
-        if channel_name in membership:
-            ch = membership[channel_name]
-            channel_id = ch["id"]
-            is_member = ch.get("is_member", False)
-            status = "✓ member" if is_member else "✗ NOT member"
-            print(f"  [{label:8}] {status}  (id={ch['id']})")
+        if not token:
+            continue
+        info = get_channel_info(label, token, channel_val)
+        if info:
+            channel_id   = info["id"]
+            channel_name = info["name"]
+            is_member    = info["is_member"]
+            status       = "OK member" if is_member else "NOT member"
+            flag         = " <-- needs invite" if not is_member and label in required_bots else ""
+            print(f"  [{label:8}] {status}  (#{channel_name}, id={channel_id}){flag}")
+            if not is_member and label in required_bots:
+                missing.append((label.lower(), channel_name))
         else:
-            if token:
-                print(f"  [{label:8}] channel not found in listing")
-
-    if channel_id and not current_val.startswith("C") and not current_val.startswith("G"):
-        fixes_needed.append((env_key, channel_id, channel_name))
+            if label in required_bots:
+                print(f"  [{label:8}] could not check")
 
 print("\n" + "=" * 70)
-if fixes_needed:
-    print("Recommended .env fixes (use channel IDs for reliability):")
-    for env_key, cid, name in fixes_needed:
-        print(f"  {env_key}={cid}   # #{name}")
+if missing:
+    print("ACTION REQUIRED — run these in Slack:")
+    for bot, ch in missing:
+        print(f"  In #{ch}: /invite @{bot}")
 else:
-    print("All channels already using IDs — no .env changes needed.")
+    print("All required bots are members of their channels.")
 print("=" * 70)
-print("\nAction required: for any bot marked '✗ NOT member', run in Slack:")
-print("  /invite @botname   (in the relevant channel)")

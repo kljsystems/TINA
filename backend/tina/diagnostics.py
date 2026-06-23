@@ -12,7 +12,6 @@ from config import (
     ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, DEFAULT_VOICE_ID,
     DEEPGRAM_API_KEY, TAVILY_API_KEY, OPENWEATHER_API_KEY,
     GITHUB_TOKEN, SUPABASE_URL, SUPABASE_KEY,
-    SLACK_TINA_BOT_TOKEN, SLACK_SAM_BOT_TOKEN,
     VAULT_DIR, PROJECTS, DATA_DIR,
 )
 
@@ -25,8 +24,6 @@ CHECKS = [
     ("openweather", "OPENWEATHER"),
     ("github",      "GITHUB"),
     ("supabase",    "SUPABASE DB"),
-    ("slack_tina",  "SLACK · TINA"),
-    ("slack_sam",   "SLACK · SAM"),
     ("calendar",    "GOOGLE CALENDAR"),
     ("vault",       "OBSIDIAN VAULT"),
     ("filesystem",  "FILESYSTEM"),
@@ -145,30 +142,6 @@ async def _check_supabase():
     return "pass", f"Read/write OK · {count} test row(s) cleaned up"
 
 
-async def _check_slack_tina():
-    if not SLACK_TINA_BOT_TOKEN:
-        return "fail", "SLACK_TINA_BOT_TOKEN not set"
-    def _test():
-        from slack_sdk import WebClient
-        return WebClient(token=SLACK_TINA_BOT_TOKEN).auth_test()
-    r = await asyncio.to_thread(_test)
-    if r["ok"]:
-        return "pass", f"@{r['user']} · team: {r.get('team', '?')}"
-    return "fail", r.get("error", "auth failed")
-
-
-async def _check_slack_sam():
-    if not SLACK_SAM_BOT_TOKEN:
-        return "fail", "SLACK_SAM_BOT_TOKEN not set"
-    def _test():
-        from slack_sdk import WebClient
-        return WebClient(token=SLACK_SAM_BOT_TOKEN).auth_test()
-    r = await asyncio.to_thread(_test)
-    if r["ok"]:
-        return "pass", f"@{r['user']} · team: {r.get('team', '?')}"
-    return "fail", r.get("error", "auth failed")
-
-
 async def _check_calendar():
     token_path = os.path.join(DATA_DIR, "token.json")
     if not os.path.exists(token_path):
@@ -246,17 +219,20 @@ async def _check_agents():
         from tina.agents.email     import EmailAgent
         from tina.agents.data      import DataAgent
         from tina.agents.marketing import MarketingAgent
+        from tina.agents.website   import WebsiteAgent
         sam     = CodingAgent()
         charlie = ResearchAgent()
         tristan = EmailAgent()
         connor  = DataAgent()
         wade    = MarketingAgent()
+        website = WebsiteAgent()
         return "pass", (
             f"{sam.name} ({len(sam._definitions)} tools) · "
             f"{charlie.name} ({len(charlie._definitions)} tools) · "
             f"{tristan.name} ({len(tristan._definitions)} tools) · "
             f"{connor.name} ({len(connor._definitions)} tools) · "
-            f"{wade.name} ({len(wade._definitions)} tools)"
+            f"{wade.name} ({len(wade._definitions)} tools) · "
+            f"{website.name} ({len(website._definitions)} tools)"
         )
     except Exception as e:
         return "fail", str(e)[:100]
@@ -270,8 +246,6 @@ _RUNNERS = {
     "openweather": _check_openweather,
     "github":      _check_github,
     "supabase":    _check_supabase,
-    "slack_tina":  _check_slack_tina,
-    "slack_sam":   _check_slack_sam,
     "calendar":    _check_calendar,
     "vault":       _check_vault,
     "filesystem":  _check_filesystem,

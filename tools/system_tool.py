@@ -88,6 +88,69 @@ DEFINITIONS = [
         },
     },
     {
+        "name": "open_browser",
+        "description": (
+            "Open a file or URL in Ky's default browser. "
+            "Pass a local file path (e.g. C:\\Users\\...\\Sites\\mysite\\index.html) to open it as a file:// page, "
+            "or a full URL (http://localhost:5173) to open a running dev server. "
+            "Use after building or updating a site so Ky can see it immediately. "
+            "Follow up with take_screenshot to verify the rendered result yourself."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type":        "string",
+                    "description": "Absolute file path or full URL to open.",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "morning_briefing",
+        "description": (
+            "Trigger the full morning routine — opens Google Calendar in the browser, "
+            "sends popup cards for weather, today's schedule, Stripe revenue, and KAOS health, "
+            "then speaks a synthesised briefing. "
+            "Call this when Ky says 'good morning', 'morning briefing', 'start my day', "
+            "or any similar greeting at the start of the day."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "dashboard_popup",
+        "description": (
+            "Push a data card to the dashboard as a featured overlay panel that auto-dismisses. "
+            "Use this during morning routine to surface KAOS health, Stripe MRR, email summary, "
+            "and other key metrics — call it once per data source so cards stack. "
+            "Also use when Ky explicitly asks to 'show me' something on the dashboard. "
+            "Keep content concise: 3-6 bullet points or key numbers. Plain text only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short card header (e.g. 'KAOS HEALTH', 'STRIPE REVENUE', 'EMAIL').",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Data to display. 3-6 lines, key numbers only. Plain text.",
+                },
+                "color": {
+                    "type": "string",
+                    "description": "Accent colour hex. Default #8B5CF6 (purple). Use #4ade80 (green) for healthy, #f59e0b (amber) for warnings, #ef4444 (red) for alerts.",
+                },
+                "ttl": {
+                    "type": "integer",
+                    "description": "Seconds before auto-dismiss. Default 45.",
+                },
+            },
+            "required": ["title", "content"],
+        },
+    },
+    {
         "name": "set_ui_pref",
         "description": (
             "Show or hide a dashboard UI element. Persisted to disk so the setting survives restarts. "
@@ -137,7 +200,6 @@ def handle(name: str, inputs: dict) -> str:
         return (
             "Restart flag written. tina.py will terminate and relaunch the backend within ~1 second. "
             "The WebSocket should reconnect automatically in ~3–5 seconds. "
-            "I'll post to Slack once I'm back online. "
             f"Reason: {reason or 'not specified'}"
         )
 
@@ -216,6 +278,53 @@ def handle(name: str, inputs: dict) -> str:
             f"Command for Ky to run:  {command}\n"
             f"{('Reason: ' + reason) if reason else ''}"
         ).strip()
+
+    if name == "open_browser":
+        import webbrowser
+        from urllib.request import pathname2url
+        target = inputs.get("target", "").strip()
+        if not target:
+            return "No target provided."
+        if target.startswith("http://") or target.startswith("https://") or target.startswith("file://"):
+            url = target
+        else:
+            # Normalise Windows path and verify the file exists before opening
+            norm = os.path.normpath(target)
+            if not os.path.exists(norm):
+                return f"File not found: {norm} — check the path and try again."
+            url = "file:///" + pathname2url(norm).lstrip("/")
+        opened = webbrowser.open(url)
+        return f"Opened in browser: {url}" if opened else f"Could not open browser for: {url}"
+
+    if name == "morning_briefing":
+        import httpx as _httpx
+        try:
+            _httpx.post("http://localhost:8000/api/briefing", timeout=5)
+            return "Morning routine started — opening calendar and sending dashboard cards now."
+        except Exception as e:
+            return f"Could not trigger morning routine: {e}"
+
+    if name == "dashboard_popup":
+        import httpx as _httpx
+        import uuid as _uuid
+        import time as _time
+        title   = inputs.get("title",  "INFO")
+        content = inputs.get("content", "")
+        color   = inputs.get("color",  "#8B5CF6")
+        ttl     = int(inputs.get("ttl", 45)) * 1000
+        payload = {
+            "id":      str(_uuid.uuid4()),
+            "title":   title,
+            "content": content,
+            "color":   color,
+            "ttl":     ttl,
+            "ts":      int(_time.time() * 1000),
+        }
+        try:
+            _httpx.post("http://localhost:8000/api/broadcast-panel", json=payload, timeout=5).raise_for_status()
+            return f"Dashboard popup sent: {title}"
+        except Exception as e:
+            return f"Could not send popup ({e}) — logging content instead:\n{title}\n{content}"
 
     if name == "set_ui_pref":
         import json as _json

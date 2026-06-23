@@ -8,9 +8,9 @@ import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
 
 # ── Context management constants ──────────────────────────────────────────────
-_TOOL_OUTPUT_MAX_CHARS  = 4_000  # cap any single tool result stored in history
-_COMPACT_EVERY_N_CALLS  = 20     # retroactively compress older results every N tool calls
-_MAX_TOOL_CALLS         = 80     # inject a wrap-up message after this many tool calls
+_TOOL_OUTPUT_MAX_CHARS  = 1_500  # cap any single tool result stored in history
+_COMPACT_EVERY_N_CALLS  = 8      # retroactively compress older results every N tool calls
+_MAX_TOOL_CALLS         = 60     # inject a wrap-up message after this many tool calls
 
 
 def _truncate_result(s: str, max_chars: int = _TOOL_OUTPUT_MAX_CHARS) -> str:
@@ -45,18 +45,16 @@ def _compact_old_tool_results(history: list, keep_tail: int = 10, max_chars: int
 
 
 _COMPLEX_KEYWORDS = {
-    "architect", "refactor", "redesign", "integrate", "migration", "migrate",
-    "rebuild", "rewrite", "multiple files", "across", "system", "overhaul",
-    "phase", "pipeline", "infrastructure", "database", "schema", "deploy",
+    "architect", "redesign", "overhaul", "rebuild", "rewrite",
+    "migration", "migrate", "refactor entire",
 }
 
 
 def _is_complex_task(task: str) -> bool:
-    """Heuristic: use Opus when the task is architecturally significant."""
+    """Use Opus only for genuine full-system overhauls. Long briefs alone don't qualify
+    — TINA always writes detailed briefs, so brief length is not a signal of complexity."""
     task_lower = task.lower()
-    keyword_hit = any(kw in task_lower for kw in _COMPLEX_KEYWORDS)
-    long_brief  = len(task) > 500
-    return keyword_hit or long_brief
+    return any(kw in task_lower for kw in _COMPLEX_KEYWORDS)
 
 
 def _semantic_vault_notes(task: str, search_dirs: list[str], max_notes: int = 6, chars_each: int = 700) -> str:
@@ -154,23 +152,44 @@ _PLAN_RE     = re.compile(r'\[PLAN:\s*(.+?)\]',     re.DOTALL | re.IGNORECASE)
 def _build_tool_content(result) -> str | list:
     """
     Convert a tool result to the correct Anthropic API content format.
-    Most tools return a plain string. Screenshot tool returns a dict with
-    __type='image' which gets converted to a multimodal content block.
+    - Plain string → string (most tools)
+    - dict __type='image' → [text block, image block] (screenshot tool)
+    - dict __type='video_content' → [text block, image block, image block, ...] (video tool)
+    - list → passed through as-is (already content blocks)
     """
-    if not isinstance(result, dict) or result.get("__type") != "image":
+    if isinstance(result, list):
+        return result
+
+    if not isinstance(result, dict):
         return str(result) if not isinstance(result, str) else result
 
-    return [
-        {"type": "text", "text": result.get("text", "Screenshot captured")},
-        {
-            "type":   "image",
-            "source": {
-                "type":       "base64",
-                "media_type": result.get("media_type", "image/png"),
-                "data":       result["data"],
+    if result.get("__type") == "image":
+        return [
+            {"type": "text", "text": result.get("text", "Screenshot captured")},
+            {
+                "type":   "image",
+                "source": {
+                    "type":       "base64",
+                    "media_type": result.get("media_type", "image/png"),
+                    "data":       result["data"],
+                },
             },
-        },
-    ]
+        ]
+
+    if result.get("__type") == "video_content":
+        blocks = [{"type": "text", "text": result.get("text", "Video processed")}]
+        for frame in result.get("frames", []):
+            blocks.append({
+                "type":   "image",
+                "source": {
+                    "type":       "base64",
+                    "media_type": frame.get("media_type", "image/jpeg"),
+                    "data":       frame["data"],
+                },
+            })
+        return blocks
+
+    return str(result)
 
 
 _MAX_DELEGATION_DEPTH = 2  # max chain length: Tina → Agent A → Agent B (no further)
@@ -192,8 +211,9 @@ class BaseAgent:
     system:           str  = ""
     tool_modules:     list = []
     allow_delegation: bool = True  # opt-out for sensitive agents; new agents get it free
-    slack_token:      str  = ""   # bot token for posting to #agents as this agent
-    slack_user_id:    str  = ""   # Slack user ID for @mentions by other agents
+    force_tool_first: bool = False # set True to require a tool call before any text output
+    force_first_tool: str  = "any" # "any" or a specific tool name to force on the first call
+    max_tokens:       int  = 4096 # override per agent for tasks that need longer responses
 
     def __init__(self):
         self.client    = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -203,10 +223,6 @@ class BaseAgent:
 
         if self.allow_delegation:
             self._definitions.append(self._build_request_agent_tool())
-
-        group_tool = self._build_group_chat_tool()
-        if group_tool:
-            self._definitions.append(group_tool)
 
     def _build_request_agent_tool(self) -> dict:
         from tina.agent import _AGENTS
@@ -239,51 +255,6 @@ class BaseAgent:
             },
         }
 
-    def _build_group_chat_tool(self) -> dict | None:
-        """Build a post_to_group tool so this agent can @mention peers in #agents."""
-        from tina.agent import _AGENTS
-        from config import SLACK_CHANNEL_AGENTS
-        if not SLACK_CHANNEL_AGENTS or not self.slack_token:
-            return None
-        # Build @mention reference for each peer
-        peer_lines = []
-        for key, cls in _AGENTS.items():
-            if isinstance(self, cls):
-                continue
-            uid  = getattr(cls, "slack_user_id", "")
-            mention = f"<@{uid}>" if uid else f"@{cls.name}"
-            peer_lines.append(f"  • {key} → {mention} ({cls.name})")
-        if not peer_lines:
-            return None
-        return {
-            "name": "post_to_group",
-            "description": (
-                "Post a message to the #agents group chat as yourself. "
-                "Use this to share findings, ask a peer a quick question, or @mention another agent. "
-                "The message appears in Slack from your identity.\n\n"
-                "To @mention a peer, include their Slack handle in your message:\n"
-                + "\n".join(peer_lines)
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "message": {"type": "string", "description": "Message to post. Include @mention if addressing a specific agent."},
-                },
-                "required": ["message"],
-            },
-        }
-
-    def _post_to_group(self, message: str) -> str:
-        """Sync handler: post a message to #agents as this agent."""
-        from config import SLACK_CHANNEL_AGENTS
-        try:
-            from slack_sdk import WebClient
-            client = WebClient(token=self.slack_token)
-            client.chat_postMessage(channel=SLACK_CHANNEL_AGENTS, text=message)
-            return f"Posted to {SLACK_CHANNEL_AGENTS}."
-        except Exception as e:
-            return f"Failed to post to group: {e}"
-
     async def _save_task(self, session_id: str, task: str, result: str):
         if not SUPABASE_URL:
             return
@@ -304,7 +275,7 @@ class BaseAgent:
         enriched_task = task
         if SUPABASE_URL:
             from tina.memory_db import load_recent_tasks
-            recent = await load_recent_tasks(self.name.lower(), limit=8)
+            recent = await load_recent_tasks(self.name.lower(), limit=4)
             if recent:
                 enriched_task = f"{recent}\n\n---\n\nCURRENT TASK:\n\n{task}"
 
@@ -317,16 +288,26 @@ class BaseAgent:
         history        = [{"role": "user", "content": enriched_task}]
         qa_rounds      = 0
         tool_call_count = 0
+        _asked_for_summary = False
 
         while True:
             kwargs = dict(
                 model=model,
-                max_tokens=8192,
+                max_tokens=self.max_tokens,
                 system=self.system,
                 messages=history,
             )
             if self._definitions:
                 kwargs["tools"] = self._definitions
+                # Force the model to call a tool on the first response when
+                # force_tool_first is set — prevents bailing with a text summary
+                # before doing any actual work.
+                if self.force_tool_first and tool_call_count == 0:
+                    ftf = self.force_first_tool
+                    kwargs["tool_choice"] = (
+                        {"type": "any"} if ftf == "any"
+                        else {"type": "tool", "name": ftf}
+                    )
 
             response = await self.client.messages.create(**kwargs)
 
@@ -339,11 +320,7 @@ class BaseAgent:
                     if on_tool:
                         await on_tool(block.name, block.input)
 
-                    if block.name == "post_to_group":
-                        result = await asyncio.to_thread(
-                            self._post_to_group, block.input.get("message", "")
-                        )
-                    elif block.name == "request_agent" and self.allow_delegation:
+                    if block.name == "request_agent" and self.allow_delegation:
                         result = await self._run_sub_agent(
                             block.input.get("agent", ""),
                             block.input.get("task", ""),
@@ -396,6 +373,23 @@ class BaseAgent:
 
             else:
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
+                print(f"[{self.name}] end_turn: {len(reply)} chars, {tool_call_count} tool calls so far | {reply[:120]!r}")
+
+                # If agent finished tool calls but returned no text, ask once for a concrete report
+                if not reply.strip() and tool_call_count > 0 and not _asked_for_summary:
+                    _asked_for_summary = True
+                    history.append({"role": "assistant", "content": response.content})
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            "Provide your completion report. Be specific and honest — only report what tool results confirm:\n"
+                            "1. Every action successfully completed (e.g. fs_write → /path/file.py ✓, email sent to x@y.com ✓)\n"
+                            "2. Anything that failed or was skipped, and why\n"
+                            "3. Whether the task is complete or incomplete\n"
+                            "Do not describe what you intended to do — only what the tool results confirm was done."
+                        ),
+                    })
+                    continue
 
                 # Check for a plan awaiting Ky approval before execution
                 if plan_handler:
@@ -427,7 +421,10 @@ class BaseAgent:
                         })
                         continue
 
-                asyncio.create_task(self._save_task(session_id, task, reply))
+                # Only persist successful results — short/empty replies are failed runs
+                # and would poison future context via load_recent_tasks.
+                if len(reply.strip()) >= 100:
+                    asyncio.create_task(self._save_task(session_id, task, reply))
                 return reply
 
     async def _run_sub_agent(self, agent_key: str, task: str, on_tool=None) -> str:

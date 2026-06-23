@@ -15,9 +15,10 @@ DEFINITIONS = [
         "name": "generate_document",
         "description": (
             "Generate a document and save it to the Generated Docs folder. "
-            "Use this for any output that isn't going directly into a codebase: "
-            "reports, invoices, summaries, plans, research docs, data exports, proposals — "
-            "anything Ky might want to open and read. "
+            "Use this for reports, invoices, summaries, plans, research docs, data exports, and proposals — "
+            "anything Ky might want to open and read as a standalone file. "
+            "DO NOT use this for website files (HTML/CSS/JS pages, full sites) — "
+            "those must be built by Jamie via delegate_to_agent with agent='website'. "
             "The file is saved and opened automatically."
         ),
         "input_schema": {
