@@ -40,7 +40,12 @@ export function useTina({ micDeviceId } = {}) {
   const [wakeWordActive,      setWakeWordActive]      = useState(false)
   const [kaosLive,            setKaosLive]            = useState(null)
   const [stripeLive,          setStripeLive]          = useState(null)
-  const [notificationHistory, setNotificationHistory] = useState([])
+  const [notificationHistory, setNotificationHistory] = useState(() => {
+    try {
+      const stored = localStorage.getItem('tina_alerts')
+      return stored ? JSON.parse(stored) : []
+    } catch { return [] }
+  })
   const [activityLogVisible,  setActivityLogVisible]  = useState(true)
   const [agentStatuses, setAgentStatuses] = useState({
     tina:      { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
@@ -93,6 +98,13 @@ export function useTina({ micDeviceId } = {}) {
   const dismissFeaturedPanel = useCallback((id) => {
     setFeaturedPanels(prev => prev.filter(p => p.id !== id))
   }, [])
+
+  // Persist alert history to localStorage so it survives page refreshes
+  useEffect(() => {
+    try {
+      localStorage.setItem('tina_alerts', JSON.stringify(notificationHistory.slice(0, 30)))
+    } catch {}
+  }, [notificationHistory])
 
   // Poll service health every 30s
   useEffect(() => {

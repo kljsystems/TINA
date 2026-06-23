@@ -108,6 +108,17 @@ DEFINITIONS = [
         },
     },
     {
+        "name": "take_screenshot",
+        "description": (
+            "Take a full screenshot of Ky's current screen and return it as an image you can see. "
+            "Use when Ky says 'what does this look like', 'can you see my screen', 'check this', "
+            "'what's on screen', or when you need to visually verify a result after opening a browser "
+            "page, running Sam's code, or checking a deployed site. "
+            "Returns the screen as a visible image — describe what you see."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "morning_briefing",
         "description": (
             "Trigger the full morning routine — opens Google Calendar in the browser, "
@@ -295,6 +306,25 @@ def handle(name: str, inputs: dict) -> str:
             url = "file:///" + pathname2url(norm).lstrip("/")
         opened = webbrowser.open(url)
         return f"Opened in browser: {url}" if opened else f"Could not open browser for: {url}"
+
+    if name == "take_screenshot":
+        try:
+            from PIL import ImageGrab
+            import io as _io, base64 as _b64
+            img  = ImageGrab.grab()
+            buf  = _io.BytesIO()
+            # Downscale if very large (keeps tokens manageable)
+            if img.width > 1920:
+                ratio = 1920 / img.width
+                img   = img.resize((1920, int(img.height * ratio)))
+            img.save(buf, format="PNG", optimize=True)
+            data = _b64.b64encode(buf.getvalue()).decode()
+            return {"__type": "image", "data": data, "media_type": "image/png",
+                    "text": f"Screenshot captured ({img.width}×{img.height})"}
+        except ImportError:
+            return "Screenshot requires Pillow — run: pip install Pillow"
+        except Exception as e:
+            return f"Screenshot failed: {e}"
 
     if name == "morning_briefing":
         import httpx as _httpx
