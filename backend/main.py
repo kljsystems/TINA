@@ -1416,15 +1416,16 @@ async def _resume_pending_tasks() -> None:
             print(f"[resume] Failed to resume {fname}: {e}")
 
 
-async def background_runner(agent_key: str, cls, task: str, on_tool):
+async def background_runner(agent_key: str, cls, task: str, on_tool, then_spec: dict | None = None):
     """Called by TinaAgent._dispatch — persists the task then launches it."""
     task_id = str(uuid.uuid4())
     _save_pending_task(task_id, agent_key, task)
-    asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool, task_id=task_id))
+    asyncio.create_task(_run_agent_background(agent_key, cls, task, on_tool, task_id=task_id, then_spec=then_spec))
 
 
 async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
-                                task_id: str = None, retried: bool = False):
+                                task_id: str = None, retried: bool = False,
+                                then_spec: dict | None = None):
     """Runs a specialist agent independently. Results delivered via dashboard + TTS."""
     from tina.agent_state import start_task, record_tool, end_task, summarize_input
 
@@ -1509,6 +1510,18 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
             await broadcast({"type": "response", "text": verbal_summary})
             asyncio.create_task(_tts_stream(verbal_summary))
             asyncio.create_task(_slack_post(f"*{display}* — {verbal_summary}"))
+            # Agent handoff — auto-dispatch follow-on agent if one was specified
+            if then_spec:
+                _then_key  = then_spec.get("agent", "")
+                _then_cls  = then_spec.get("cls")
+                _then_task = then_spec.get("task", "").replace("{result}", verbal_summary)
+                if _then_key and _then_cls and _then_task:
+                    notice = f"{display} finished. Handing off to {_then_key.capitalize()} now."
+                    await broadcast({"type": "response", "text": notice})
+                    asyncio.create_task(_tts_stream(notice))
+                    asyncio.create_task(_run_agent_background(_then_key, _then_cls, _then_task, None))
+                    print(f"[handoff] {agent_key} → {_then_key}")
+
             # Proactive popup for email triage — surface urgent items immediately
             if agent_key == "email":
                 import uuid as _uuid, time as _time

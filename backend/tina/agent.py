@@ -76,6 +76,15 @@ _DELEGATE_TOOL = {
                 "type":        "string",
                 "description": "Full task brief for the specialist, including relevant context.",
             },
+            "then_agent": {
+                "type":        "string",
+                "enum":        list(_AGENTS.keys()),
+                "description": "Optional: agent to run automatically when this one finishes. Use for multi-step pipelines (e.g. Charlie researches → Sam builds).",
+            },
+            "then_task": {
+                "type":        "string",
+                "description": "Task brief for the follow-on agent. Use {result} to include a summary of the first agent's output.",
+            },
         },
         "required": ["agent", "task"],
     },
@@ -194,6 +203,19 @@ class TinaAgent:
         "not delegating",
     )
 
+    @staticmethod
+    def _load_context_brief() -> str:
+        """Load the persistent context brief from vault. TINA updates this herself via vault_write."""
+        try:
+            from config import VAULT_DIR
+            path = os.path.join(VAULT_DIR, "02-Tina-Memory", "context-brief.md")
+            if os.path.exists(path):
+                content = open(path, encoding="utf-8").read().strip()
+                return content[:3000]  # cap so it never bloats history
+        except Exception as e:
+            print(f"[TinaAgent] context brief load error: {e}")
+        return ""
+
     async def _ensure_history_loaded(self):
         if self._history_loaded or not SUPABASE_URL:
             self._history_loaded = True
@@ -221,9 +243,21 @@ class TinaAgent:
                     print(f"[TinaAgent] stripped poisoned history turn: {text[:80]!r}")
                     continue
             cleaned.append(msg)
-        self.history = cleaned
-        if self.history:
-            print(f"[TinaAgent] loaded {len(self.history)} turns ({len(raw) - len(cleaned)} poisoned turns stripped)")
+
+        # Prepend context brief as a synthetic first exchange so TINA always has
+        # persistent facts about Ky and KLJ regardless of what's in the recent turns.
+        brief = self._load_context_brief()
+        if brief:
+            self.history = [
+                {"role": "user",      "content": f"[MEMORY CONTEXT — read at startup]\n\n{brief}"},
+                {"role": "assistant", "content": "Context loaded."},
+            ] + cleaned
+            print(f"[TinaAgent] context brief injected ({len(brief)} chars)")
+        else:
+            self.history = cleaned
+
+        if cleaned:
+            print(f"[TinaAgent] loaded {len(cleaned)} turns ({len(raw) - len(cleaned)} poisoned turns stripped)")
 
     async def _save_turns(self, user_msg: str, assistant_reply: str):
         if not SUPABASE_URL:
@@ -392,12 +426,26 @@ class TinaAgent:
             if not cls:
                 return f"Unknown agent: {agent_key}"
 
+            then_spec = None
+            if inputs.get("then_agent"):
+                then_cls = _AGENTS.get(inputs["then_agent"])
+                if then_cls:
+                    then_spec = {
+                        "agent": inputs["then_agent"],
+                        "cls":   then_cls,
+                        "task":  inputs.get("then_task", ""),
+                    }
+
             if self.background_runner and background:
                 # Non-blocking: agent runs independently, Tina continues immediately
-                await self.background_runner(agent_key, cls, task, on_tool)
+                await self.background_runner(agent_key, cls, task, on_tool, then_spec=then_spec)
+                handoff_note = (
+                    f" {inputs['then_agent'].capitalize()} will automatically start when {agent_key} finishes."
+                    if then_spec else ""
+                )
                 return (
-                    f"Background task dispatched to {agent_key}. "
-                    "Kai will be notified via Slack and the dashboard when complete."
+                    f"Background task dispatched to {agent_key}.{handoff_note} "
+                    "Ky will be notified via Slack and the dashboard when complete."
                 )
 
             # Blocking fallback (Slack, /api/chat, background=False)
