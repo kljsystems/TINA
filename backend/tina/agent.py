@@ -6,13 +6,16 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, SLACK_SAM_USER_ID, SLACK_KAI_USER_ID
-from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool
+from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL
+from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool, video_tool, capture_tool, kaos_tool, social_tool, gdrive_tool, stripe_tool
+from tina.agents.base import _build_tool_content
 from tina.agents.research  import ResearchAgent
 from tina.agents.coding    import CodingAgent
 from tina.agents.email     import EmailAgent
 from tina.agents.data      import DataAgent
 from tina.agents.marketing import MarketingAgent
+from tina.agents.website   import WebsiteAgent
+from tina.agents.pm        import ProjectManagerAgent
 
 # ── Specialist agent registry ─────────────────────────────────────────────────
 _AGENTS: dict[str, type] = {
@@ -21,10 +24,12 @@ _AGENTS: dict[str, type] = {
     "email":     EmailAgent,
     "data":      DataAgent,
     "marketing": MarketingAgent,
+    "website":   WebsiteAgent,
+    "pm":        ProjectManagerAgent,
 }
 
 # ── Direct tools (Tina handles herself without delegating) ────────────────────
-_DIRECT_MODULES  = [weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool]
+_DIRECT_MODULES  = [weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool, video_tool, capture_tool, kaos_tool, social_tool, gdrive_tool, stripe_tool]
 _DIRECT_DEFS     = [d for m in _DIRECT_MODULES for d in m.DEFINITIONS]
 _DIRECT_HANDLERS = {d["name"]: m.handle for m in _DIRECT_MODULES for d in m.DEFINITIONS}
 
@@ -55,6 +60,8 @@ _DELEGATE_TOOL = {
         "statistics, generating charts, or any task involving structured data from local files. "
         "Use 'marketing' (Wade) for social media content — drafting posts, video scripts, video ideas, "
         "trend research, and posting to Facebook or Instagram. "
+        "Use 'website' for anything web — UI/UX design, layouts, colour, typography, HTML/CSS/JS, React, Next.js, "
+        "SEO, performance, accessibility, and CMS platforms like WordPress. "
         "Write a clear task brief — include all relevant context, repo names, file paths, and what outcome is needed."
     ),
     "input_schema": {
@@ -116,21 +123,42 @@ _STATUS_TOOL = {
     },
 }
 
-_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL, _STATUS_TOOL, _SEARCH_HISTORY_TOOL]
+# ── Promote project tool ──────────────────────────────────────────────────────
+_PROMOTE_TOOL = {
+    "name":        "promote_project",
+    "description": (
+        "Promote a proposed project from the inbox pipeline to active status. "
+        "Use when Ky says 'promote X', 'approve X', 'let's go with X', 'activate X project', "
+        "or any variant of approving a project that was auto-researched by Charlie. "
+        "The project must have been through the inbox pipeline (captured → classified → proposed). "
+        "After promotion the project is active and ready for execution."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "project_name": {
+                "type":        "string",
+                "description": "The project name to promote — partial names and fuzzy matches are fine.",
+            },
+        },
+        "required": ["project_name"],
+    },
+}
+
+_ALL_TOOLS = _DIRECT_DEFS + [_DELEGATE_TOOL, _DIAG_TOOL, _STATUS_TOOL, _SEARCH_HISTORY_TOOL, _PROMOTE_TOOL]
 
 # ── Extended thinking heuristic ───────────────────────────────────────────────
+# Only trigger for genuinely strategic/architectural requests, not casual conversation.
 _THINKING_KEYWORDS = frozenset([
-    "plan", "should", "best", "compare", "advice", "strategy",
-    "decide", "explain", "analyse", "analyze", "design", "recommend",
-    "options", "trade", "pros", "cons", "help me", "what do you think",
-    "how do i", "how should", "which is better", "which one",
-    "why", "architecture", "approach", "problem", "issue", "debug",
-    "review", "evaluate", "assess", "consider", "think about",
+    "architect", "redesign", "compare options", "strategy",
+    "trade-offs", "pros and cons", "evaluate options",
+    "design from scratch", "recommend approach", "assess the best",
+    "which approach is better", "how should we design",
 ])
 
 def _warrants_thinking(message: str) -> bool:
     """Returns True when the request is complex enough to warrant extended thinking."""
-    if len(message) > 200:
+    if len(message) > 800:
         return True
     lower = message.lower()
     return any(kw in lower for kw in _THINKING_KEYWORDS)
@@ -149,15 +177,53 @@ class TinaAgent:
     def has_background_runner(self) -> bool:
         return self.background_runner is not None
 
+    # Assistant turns containing these phrases came from a bug where Tina
+    # bypassed Jamie and generated website files herself. They must not be
+    # fed back as context or Tina will keep repeating the bad behaviour.
+    _HISTORY_POISON = (
+        "document generator",
+        "generate_document",
+        "no agents, no delegation",
+        "not using agents",
+        "bypassing agent",
+        "bypass agent",
+        "file write is broken",
+        "file-write tool is",
+        "straight through my",
+        "going directly",
+        "not delegating",
+    )
+
     async def _ensure_history_loaded(self):
         if self._history_loaded or not SUPABASE_URL:
             self._history_loaded = True
             return
         self._history_loaded = True
         from tina.memory_db import load_history
-        self.history = await load_history("tina", limit=40)
+        raw = await load_history("tina", limit=20)
+        cleaned = []
+        for msg in raw:
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    text = content.lower()
+                elif isinstance(content, list):
+                    text = " ".join(
+                        (b.get("text", "") if isinstance(b, dict) else getattr(b, "text", ""))
+                        for b in content
+                    ).lower()
+                else:
+                    text = ""
+                if any(phrase in text for phrase in self._HISTORY_POISON):
+                    # Remove the paired user turn too
+                    if cleaned and cleaned[-1].get("role") == "user":
+                        cleaned.pop()
+                    print(f"[TinaAgent] stripped poisoned history turn: {text[:80]!r}")
+                    continue
+            cleaned.append(msg)
+        self.history = cleaned
         if self.history:
-            print(f"[TinaAgent] loaded {len(self.history)} turns from memory")
+            print(f"[TinaAgent] loaded {len(self.history)} turns ({len(raw) - len(cleaned)} poisoned turns stripped)")
 
     async def _save_turns(self, user_msg: str, assistant_reply: str):
         if not SUPABASE_URL:
@@ -166,31 +232,105 @@ class TinaAgent:
         await save_turn("tina", self.session_id, "user",      user_msg)
         await save_turn("tina", self.session_id, "assistant", assistant_reply)
 
+    @staticmethod
+    def _sanitize_history(history: list) -> list:
+        """Remove broken tool_use/tool_result pairs anywhere in history.
+
+        Two cases handled:
+        1. Orphaned tool_use — assistant message whose tool_use ids are not fully
+           covered by the immediately following user message's tool_result ids.
+        2. Orphaned tool_result — user message whose tool_result ids don't all appear
+           as tool_use ids in the immediately preceding assistant message.
+
+        Both arise from WS drops that interrupt a tool-call cycle mid-flight, leaving
+        dangling blocks that Anthropic rejects with a 400 on the next request.
+        """
+        def _use_ids(content) -> set:
+            ids = set()
+            if not isinstance(content, list):
+                return ids
+            for b in content:
+                if (getattr(b, "type", None) == "tool_use" or
+                        (isinstance(b, dict) and b.get("type") == "tool_use")):
+                    bid = getattr(b, "id", None) or (b.get("id") if isinstance(b, dict) else None)
+                    if bid:
+                        ids.add(bid)
+            return ids
+
+        def _result_ids(content) -> set:
+            ids = set()
+            if not isinstance(content, list):
+                return ids
+            for b in content:
+                if (getattr(b, "type", None) == "tool_result" or
+                        (isinstance(b, dict) and b.get("type") == "tool_result")):
+                    bid = (getattr(b, "tool_use_id", None) or
+                           (b.get("tool_use_id") if isinstance(b, dict) else None))
+                    if bid:
+                        ids.add(bid)
+            return ids
+
+        result = []
+        i = 0
+        while i < len(history):
+            msg = history[i]
+
+            if msg.get("role") == "assistant":
+                use_ids = _use_ids(msg.get("content", []))
+                if use_ids:
+                    next_msg = history[i + 1] if i + 1 < len(history) else None
+                    next_res_ids = _result_ids(next_msg.get("content", []) if next_msg else [])
+                    if not use_ids.issubset(next_res_ids):
+                        # Drop this assistant turn; if the next message is a partial
+                        # tool_result user turn, drop that too.
+                        skip = 2 if (next_msg and next_res_ids and
+                                     next_msg.get("role") == "user") else 1
+                        i += skip
+                        continue
+
+            elif msg.get("role") == "user":
+                res_ids = _result_ids(msg.get("content", []))
+                if res_ids:
+                    prev = result[-1] if result else None
+                    prev_use_ids = _use_ids(prev.get("content", []) if prev else [])
+                    if not res_ids.issubset(prev_use_ids):
+                        # Orphaned tool_result — also remove the preceding assistant
+                        # message that was just appended (it has no complete pair now).
+                        if result and result[-1].get("role") == "assistant":
+                            result.pop()
+                        i += 1
+                        continue
+
+            result.append(msg)
+            i += 1
+        return result
+
     async def chat(self, message: str, on_tool=None, on_tool_result=None, on_agent_done=None, background: bool = True) -> str:
         await self._ensure_history_loaded()
+        self.history = self._sanitize_history(self.history)
         self.history.append({"role": "user", "content": message})
 
         use_thinking = _warrants_thinking(message)
-        while True:
-            now = datetime.now()
-            system = (
-                f"Current date: {now.strftime('%A, %d %B %Y')}\n"
-                f"Current time: {now.strftime('%I:%M %p')} (Sydney)\n\n"
-            ) + SYSTEM_PROMPT.replace(
-                "{SLACK_SAM_USER_ID}", SLACK_SAM_USER_ID or "Sam"
-            ).replace(
-                "{SLACK_KAI_USER_ID}", SLACK_KAI_USER_ID or "Ky"
-            )
 
+        # Pre-build cached system + tools (stable across turns — cache saves ~90% on re-sends)
+        now = datetime.now()
+        _system_text = (
+            f"Current date: {now.strftime('%A, %d %B %Y')}\n"
+            f"Current time: {now.strftime('%I:%M %p')} (Sydney)\n\n"
+        ) + SYSTEM_PROMPT
+        _system_cached = [{"type": "text", "text": _system_text, "cache_control": {"type": "ephemeral"}}]
+        _tools_cached  = [*_ALL_TOOLS[:-1], {**_ALL_TOOLS[-1], "cache_control": {"type": "ephemeral"}}]
+
+        while True:
             thinking_kwargs = (
-                {"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}
+                {"thinking": {"type": "enabled", "budget_tokens": 4000}}
                 if use_thinking else {}
             )
             response = await self.client.messages.create(
                 model=ORCHESTRATOR_MODEL,
-                max_tokens=8000 if use_thinking else 1024,
-                system=system,
-                tools=_ALL_TOOLS,
+                max_tokens=6000 if use_thinking else 1024,
+                system=_system_cached,
+                tools=_tools_cached,
                 messages=self.history,
                 **thinking_kwargs,
             )
@@ -205,17 +345,19 @@ class TinaAgent:
                         await on_tool(block.name, block.input)
 
                 _NO_RESULT_BROADCAST = frozenset(
-                    ("delegate_to_agent", "run_diagnostics", "get_agent_status", "search_conversation_history")
+                    ("delegate_to_agent", "run_diagnostics", "get_agent_status",
+                     "search_conversation_history", "video_download", "video_process")
                 )
 
                 async def _run_one(block):
                     result = await self._dispatch(block.name, block.input, on_tool, on_agent_done, background)
                     if on_tool_result and block.name not in _NO_RESULT_BROADCAST:
                         await on_tool_result(block.name, block.input, result)
+                    content = _build_tool_content(result)
                     return {
                         "type":        "tool_result",
                         "tool_use_id": block.id,
-                        "content":     result,
+                        "content":     content,
                     }
 
                 tool_results = list(await asyncio.gather(*[_run_one(b) for b in tool_blocks]))
@@ -263,6 +405,37 @@ class TinaAgent:
             result     = await specialist.run(task, on_tool=on_tool)
             if on_agent_done:
                 await on_agent_done(agent_key)
+            return result
+
+        if name == "promote_project":
+            project_name = inputs.get("project_name", "")
+            try:
+                import sys as _sys
+                import os as _os
+                _backend_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+                _tina_root    = _os.path.dirname(_backend_root)
+                if _tina_root not in _sys.path:
+                    _sys.path.insert(0, _tina_root)
+                if _backend_root not in _sys.path:
+                    _sys.path.insert(0, _backend_root)
+                from main import _promote_project
+                result = await asyncio.to_thread(_promote_project, project_name)
+            except ImportError:
+                return "Promote tool not available in this context."
+
+            if "active status" in result and self.background_runner:
+                import re as _re
+                slug = _re.sub(r"[^\w\s-]", "", project_name.lower())
+                slug = _re.sub(r"[\s_]+", "-", slug).strip("-")[:60]
+                morgan_task = (
+                    f"EXECUTE PROJECT: {project_name}\n\n"
+                    f"{result}\n\n"
+                    f"The active project folder is 01-Projects/{slug}/ (or the closest match to that name). "
+                    "Read capture.md and research.md from that folder, build an execution plan, "
+                    "and coordinate the right agents to complete the project."
+                )
+                await self.background_runner("pm", ProjectManagerAgent, morgan_task, None)
+
             return result
 
         handler = _DIRECT_HANDLERS.get(name)

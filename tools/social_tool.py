@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     TAVILY_API_KEY,
     META_PAGE_ACCESS_TOKEN, META_PAGE_ID, META_INSTAGRAM_ACCOUNT_ID,
+    META_AD_ACCOUNT_ID,
     GENERATED_DOCS_DIR,
 )
 
@@ -136,6 +137,83 @@ DEFINITIONS = [
         },
     },
     {
+        "name": "meta_ads_overview",
+        "description": (
+            "Get Facebook/Instagram ad account performance — total spend, impressions, reach, "
+            "clicks, CPM, CPC, and purchase conversions/ROAS if running conversion campaigns. "
+            "Use to review paid ad performance and return on ad spend."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["last_7_days", "last_14_days", "last_30_days", "last_month", "this_month"],
+                    "description": "Reporting period. Defaults to last_7_days.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "meta_ads_top_creatives",
+        "description": (
+            "List top performing ads sorted by spend, with impressions, clicks, CTR, and ROAS. "
+            "Use to identify which creatives are working and which to pause."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["last_7_days", "last_14_days", "last_30_days", "last_month", "this_month"],
+                    "description": "Reporting period. Defaults to last_7_days.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max ads to return. Defaults to 10.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "meta_page_analytics",
+        "description": (
+            "Get Facebook Page performance metrics — impressions, reach, engaged users, new page likes, "
+            "page views, and recent post engagement. Use to review how KLJ's Facebook presence is performing "
+            "and identify which posts got the most traction."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["day", "week", "month"],
+                    "description": "Reporting period for account-level metrics. Defaults to week.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "meta_instagram_analytics",
+        "description": (
+            "Get Instagram account performance metrics — impressions, reach, profile views — "
+            "plus recent post engagement (likes and comments). Use to review how KLJ's Instagram is performing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to look back for account-level insights. Defaults to 7.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "content_list",
         "description": "List saved content from Wade's content library, optionally filtered by type, platform, or status.",
         "input_schema": {
@@ -194,6 +272,20 @@ def _meta_post(endpoint: str, params: dict) -> dict:
         f"https://graph.facebook.com/v19.0/{endpoint}",
         data=data,
         method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return _json.loads(r.read())
+
+
+def _meta_get(endpoint: str, params: dict) -> dict:
+    import urllib.request, urllib.parse
+    if not META_PAGE_ACCESS_TOKEN:
+        raise ValueError("META_PAGE_ACCESS_TOKEN not set in .env")
+    params["access_token"] = META_PAGE_ACCESS_TOKEN
+    qs = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"https://graph.facebook.com/v19.0/{endpoint}?{qs}",
+        method="GET",
     )
     with urllib.request.urlopen(req, timeout=15) as r:
         return _json.loads(r.read())
@@ -316,6 +408,168 @@ date: {date.today()}
             return f"Posted to Instagram. Post ID: {post_id}"
         except Exception as e:
             return f"Instagram post failed: {e}"
+
+    if name == "meta_ads_overview":
+        if not META_AD_ACCOUNT_ID:
+            return "META_AD_ACCOUNT_ID not set in .env — add your ad account ID (digits only, no 'act_' prefix)."
+        period = inputs.get("period", "last_7_days")
+        try:
+            fields = "spend,impressions,reach,clicks,cpm,cpc,actions,action_values"
+            data = _meta_get(f"act_{META_AD_ACCOUNT_ID}/insights", {
+                "fields": fields,
+                "date_preset": period,
+                "level": "account",
+            })
+            rows = data.get("data", [])
+            if not rows:
+                return f"No ad data found for {period}. Ad account may have no activity in this period."
+            row = rows[0]
+            spend = float(row.get("spend", 0))
+            impressions = int(row.get("impressions", 0))
+            reach = int(row.get("reach", 0))
+            clicks = int(row.get("clicks", 0))
+            cpm = float(row.get("cpm", 0))
+            cpc = float(row.get("cpc", 0))
+            ctr = (clicks / impressions * 100) if impressions else 0
+
+            # Extract purchase conversions and value
+            actions = {a["action_type"]: float(a["value"]) for a in row.get("actions", [])}
+            action_values = {a["action_type"]: float(a["value"]) for a in row.get("action_values", [])}
+            purchases = actions.get("purchase", 0)
+            purchase_value = action_values.get("purchase", 0)
+            roas = (purchase_value / spend) if spend > 0 else 0
+
+            lines = [f"META ADS OVERVIEW — {period.replace('_', ' ')}\n"]
+            lines.append(f"  Spend:       ${spend:,.2f}")
+            lines.append(f"  Impressions: {impressions:,}")
+            lines.append(f"  Reach:       {reach:,}")
+            lines.append(f"  Clicks:      {clicks:,}  (CTR: {ctr:.2f}%)")
+            lines.append(f"  CPM:         ${cpm:.2f}")
+            lines.append(f"  CPC:         ${cpc:.2f}")
+            if purchases:
+                lines.append(f"  Purchases:   {int(purchases)}")
+                lines.append(f"  Revenue:     ${purchase_value:,.2f}")
+                lines.append(f"  ROAS:        {roas:.2f}x")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Meta ads overview failed: {e}"
+
+    if name == "meta_ads_top_creatives":
+        if not META_AD_ACCOUNT_ID:
+            return "META_AD_ACCOUNT_ID not set in .env"
+        period = inputs.get("period", "last_7_days")
+        limit = int(inputs.get("limit", 10))
+        try:
+            fields = "ad_name,spend,impressions,clicks,ctr,cpc,actions,action_values"
+            data = _meta_get(f"act_{META_AD_ACCOUNT_ID}/insights", {
+                "fields": fields,
+                "date_preset": period,
+                "level": "ad",
+                "sort": "spend_descending",
+                "limit": str(limit),
+            })
+            rows = data.get("data", [])
+            if not rows:
+                return f"No ad creative data found for {period}."
+
+            lines = [f"META ADS — TOP CREATIVES ({period.replace('_', ' ')})\n"]
+            for row in rows:
+                ad_name = row.get("ad_name", "Unnamed")[:50]
+                spend = float(row.get("spend", 0))
+                impressions = int(row.get("impressions", 0))
+                clicks = int(row.get("clicks", 0))
+                ctr = float(row.get("ctr", 0))
+                cpc = float(row.get("cpc", 0))
+                action_values = {a["action_type"]: float(a["value"]) for a in row.get("action_values", [])}
+                purchase_value = action_values.get("purchase", 0)
+                roas = (purchase_value / spend) if spend > 0 else 0
+                lines.append(f"  {ad_name}")
+                lines.append(f"  Spend: ${spend:.2f}  Impressions: {impressions:,}  Clicks: {clicks:,}  CTR: {ctr:.2f}%  CPC: ${cpc:.2f}" + (f"  ROAS: {roas:.2f}x" if roas else ""))
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Meta ads top creatives failed: {e}"
+
+    if name == "meta_page_analytics":
+        period = inputs.get("period", "week")
+        if not META_PAGE_ID:
+            return "META_PAGE_ID not set in .env"
+        try:
+            metrics = [
+                "page_impressions",
+                "page_impressions_unique",
+                "page_engaged_users",
+                "page_fan_adds",
+                "page_views_total",
+            ]
+            data = _meta_get(f"{META_PAGE_ID}/insights", {
+                "metric": ",".join(metrics),
+                "period": period,
+            })
+            lines = [f"FACEBOOK PAGE ANALYTICS ({period})\n"]
+            for m in data.get("data", []):
+                values = m.get("values", [])
+                total = sum(v.get("value", 0) for v in values)
+                label = m.get("name", "").replace("page_", "").replace("_", " ").title()
+                lines.append(f"  {label}: {total:,}")
+            posts_data = _meta_get(f"{META_PAGE_ID}/posts", {
+                "fields": "id,message,created_time,permalink_url,likes.summary(true),comments.summary(true),shares",
+                "limit": "5",
+            })
+            if posts_data.get("data"):
+                lines.append("\nRECENT POSTS:")
+                for post in posts_data["data"]:
+                    msg = (post.get("message") or "")[:80].replace("\n", " ")
+                    likes = post.get("likes", {}).get("summary", {}).get("total_count", 0)
+                    comments = post.get("comments", {}).get("summary", {}).get("total_count", 0)
+                    shares = post.get("shares", {}).get("count", 0)
+                    created = post.get("created_time", "")[:10]
+                    lines.append(f"  [{created}] {msg}")
+                    lines.append(f"  Likes: {likes}  Comments: {comments}  Shares: {shares}")
+                    if post.get("permalink_url"):
+                        lines.append(f"  {post['permalink_url']}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Facebook analytics failed: {e}"
+
+    if name == "meta_instagram_analytics":
+        days = int(inputs.get("days", 7))
+        if not META_INSTAGRAM_ACCOUNT_ID:
+            return "META_INSTAGRAM_ACCOUNT_ID not set in .env"
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            since = int((_dt.utcnow() - _td(days=days)).timestamp())
+            until = int(_dt.utcnow().timestamp())
+            insights = _meta_get(f"{META_INSTAGRAM_ACCOUNT_ID}/insights", {
+                "metric": "impressions,reach,profile_views",
+                "period": "day",
+                "since": str(since),
+                "until": str(until),
+            })
+            lines = [f"INSTAGRAM ANALYTICS (last {days} days)\n"]
+            for m in insights.get("data", []):
+                values = m.get("values", [])
+                total = sum(v.get("value", 0) for v in values)
+                label = m.get("name", "").replace("_", " ").title()
+                lines.append(f"  {label}: {total:,}")
+            media = _meta_get(f"{META_INSTAGRAM_ACCOUNT_ID}/media", {
+                "fields": "id,caption,timestamp,media_type,permalink,like_count,comments_count",
+                "limit": "5",
+            })
+            if media.get("data"):
+                lines.append("\nRECENT POSTS:")
+                for post in media["data"]:
+                    caption = (post.get("caption") or "")[:80].replace("\n", " ")
+                    likes = post.get("like_count", 0)
+                    comments = post.get("comments_count", 0)
+                    media_type = post.get("media_type", "")
+                    ts = post.get("timestamp", "")[:10]
+                    lines.append(f"  [{ts}] {media_type}: {caption}")
+                    lines.append(f"  Likes: {likes}  Comments: {comments}")
+                    if post.get("permalink"):
+                        lines.append(f"  {post['permalink']}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Instagram analytics failed: {e}"
 
     if name == "content_list":
         if not os.path.isdir(CONTENT_DIR):

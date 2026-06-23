@@ -12,9 +12,11 @@ import asyncio
 import base64
 import json as _json
 import re
+import shutil
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 import httpx
 import anthropic
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -23,12 +25,8 @@ from config import (
     ANTHROPIC_API_KEY, MODEL, ORCHESTRATOR_MODEL, SYSTEM_PROMPT,
     DEEPGRAM_API_KEY, ELEVENLABS_API_KEY,
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
-    SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SAM_BOT_TOKEN, SLACK_KAI_USER_ID, SLACK_SAM_USER_ID, SLACK_TINA_USER_ID,
-    SLACK_CHANNEL, SLACK_CHANNEL_SAM, SLACK_CHANNEL_RESEARCH, SLACK_CHANNEL_AGENTS,
-    SLACK_TRISTAN_BOT_TOKEN, SLACK_CHANNEL_TRISTAN, SLACK_TRISTAN_USER_ID,
-    SLACK_CHARLIE_BOT_TOKEN, SLACK_CHARLIE_USER_ID,
-    SLACK_CONNOR_BOT_TOKEN, SLACK_CHANNEL_CONNOR, SLACK_CONNOR_USER_ID,
-    SLACK_WADE_BOT_TOKEN, SLACK_CHANNEL_WADE, SLACK_WADE_USER_ID,
+    VAULT_DIR,
+    SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_CHANNEL, SLACK_KY_USER_ID,
 )
 from tina.agent import TinaAgent
 
@@ -94,30 +92,12 @@ def _make_tool_result_event(name: str, result) -> dict | None:
     }
 
 _AGENT_META = {
-    "research": {"display": "Charlie",  "color": "#06b6d4", "glow": "#67e8f9", "channel": SLACK_CHANNEL_RESEARCH, "token": SLACK_CHARLIE_BOT_TOKEN  or None},
-    "coding":   {"display": "Sam",      "color": "#10b981", "glow": "#6ee7b7", "channel": SLACK_CHANNEL_SAM,      "token": SLACK_SAM_BOT_TOKEN      or None},
-    "email":    {"display": "Tristan",  "color": "#f59e0b", "glow": "#fcd34d", "channel": SLACK_CHANNEL_TRISTAN,  "token": SLACK_TRISTAN_BOT_TOKEN  or None},
-    "data":      {"display": "Connor",  "color": "#8b5cf6", "glow": "#c4b5fd", "channel": SLACK_CHANNEL_CONNOR,   "token": SLACK_CONNOR_BOT_TOKEN   or None},
-    "marketing": {"display": "Wade",   "color": "#ec4899", "glow": "#f9a8d4", "channel": SLACK_CHANNEL_WADE,     "token": SLACK_WADE_BOT_TOKEN     or None},
-}
-
-# Channel → agent key, for routing direct Slack messages to the right agent
-_CHANNEL_TO_AGENT = {
-    SLACK_CHANNEL_SAM:      "coding",
-    SLACK_CHANNEL_RESEARCH: "research",
-    SLACK_CHANNEL_TRISTAN:  "email",
-    SLACK_CHANNEL_CONNOR:   "data",
-    SLACK_CHANNEL_WADE:     "marketing",
-}
-
-# Slack user ID → agent key, for routing @mentions in #agents group chat
-_USER_TO_AGENT = {
-    uid: key for uid, key in [
-        (SLACK_SAM_USER_ID,     "coding"),
-        (SLACK_CHARLIE_USER_ID, "research"),
-        (SLACK_TRISTAN_USER_ID, "email"),
-        (SLACK_CONNOR_USER_ID,  "data"),
-    ] if uid
+    "research":  {"display": "Charlie", "color": "#06b6d4", "glow": "#67e8f9"},
+    "coding":    {"display": "Sam",     "color": "#10b981", "glow": "#6ee7b7"},
+    "email":     {"display": "Tristan", "color": "#f59e0b", "glow": "#fcd34d"},
+    "data":      {"display": "Connor",  "color": "#8b5cf6", "glow": "#c4b5fd"},
+    "marketing": {"display": "Wade",    "color": "#ec4899", "glow": "#f9a8d4"},
+    "website":   {"display": "Jamie",   "color": "#0ea5e9", "glow": "#7dd3fc"},
 }
 
 
@@ -162,7 +142,7 @@ async def _schedule_nightly_reindex():
 
 
 async def _run_morning_briefing():
-    """Gather live data and deliver Tina's spoken morning briefing via TTS + Slack."""
+    """Gather live data and deliver Tina's spoken morning briefing via TTS."""
     from datetime import date
     from config import PENDING_TASKS_DIR
 
@@ -222,27 +202,64 @@ async def _run_morning_briefing():
     except Exception as e:
         print(f"[briefing] vault: {e}")
 
-    # Ask Claude to synthesise a natural spoken briefing
+    # Vault — upcoming follow-ups and next steps flagged by agents
+    try:
+        v2 = await asyncio.to_thread(
+            _DIRECT_HANDLERS["vault_search"], "vault_search",
+            {"query": "follow-up next steps action required todo"}
+        )
+        if v2 and "no results" not in str(v2).lower() and "not configured" not in str(v2).lower():
+            sections.append(f"VAULT — FOLLOW-UPS:\n{str(v2)[:400]}")
+    except Exception as e:
+        print(f"[briefing] vault follow-ups: {e}")
+
+    # Tomorrow's calendar events (for forward-looking priority)
+    try:
+        from datetime import date, timedelta
+        tomorrow     = (today + timedelta(days=1)).isoformat()
+        day_after    = (today + timedelta(days=2)).isoformat()
+        cal2 = await asyncio.to_thread(
+            _DIRECT_HANDLERS["list_events"], "list_events", {
+                "time_min": f"{tomorrow}T00:00:00",
+                "time_max": f"{day_after}T23:59:59",
+                "max_results": 5,
+            }
+        )
+        if cal2 and "no events" not in str(cal2).lower():
+            sections.append(f"TOMORROW:\n{cal2}")
+    except Exception as e:
+        print(f"[briefing] tomorrow calendar: {e}")
+
+    # KAOS — developer health check
+    try:
+        from tools.kaos_tool import _kaos_overview
+        kaos = await asyncio.to_thread(_kaos_overview)
+        if kaos and "not configured" not in kaos:
+            sections.append(f"KAOS:\n{kaos}")
+    except Exception as e:
+        print(f"[briefing] kaos: {e}")
+
+    # Ask Claude to synthesise a natural spoken briefing with prioritised action list
     data_block = f"Today is {today_str}.\n\n" + "\n\n".join(sections)
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp   = await client.messages.create(
             model=ORCHESTRATOR_MODEL,
-            max_tokens=350,
+            max_tokens=450,
             system=(
                 "You are TINA giving Ky his morning briefing. "
                 "Write a natural spoken summary — plain prose only, no markdown, no bullet points, no headers. "
-                "Be warm and direct. Cover: weather, what's on the calendar, any pending agent work. "
+                "Be warm and direct. Cover: weather, what's on the calendar today and tomorrow, any pending agent work, any follow-ups flagged in the vault. "
                 "If the calendar is empty, say so. "
-                "Keep it under 100 words. Start with 'Good morning Ky.' "
-                "End with one sentence on what to focus on first today."
+                "End with a prioritised focus list: say 'Your top priorities today are' then list 3 to 5 specific actions ranked by urgency, in plain spoken sentences. "
+                "Keep the whole thing under 150 words. Start with 'Good morning Ky.'"
             ),
             messages=[{"role": "user", "content": data_block}],
         )
         briefing = next((b.text for b in resp.content if hasattr(b, "text")), "")
     except Exception as e:
         print(f"[briefing] synthesis failed: {e}")
-        briefing = f"Good morning Ky. Today is {today_str}. I had trouble pulling the full briefing — check Slack for anything urgent."
+        briefing = f"Good morning Ky. Today is {today_str}. I had trouble pulling the full briefing — check the dashboard for anything urgent."
 
     if not briefing.strip():
         return
@@ -253,13 +270,7 @@ async def _run_morning_briefing():
     await broadcast({"type": "response", "text": briefing})
     await _tts_stream(briefing)
 
-    # Post to Slack — spoken text up top, raw data below for reference
-    kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "Ky"
-    raw_data    = "\n\n".join(sections)[:1500] if sections else ""
-    slack_body  = f"*Morning briefing — {today_str}* {kai_mention}\n\n{briefing}"
-    if raw_data:
-        slack_body += f"\n\n```\n{raw_data}\n```"
-    await _slack_post(SLACK_CHANNEL, slack_body, token=SLACK_TINA_BOT_TOKEN)
+    print(f"[briefing] delivered for {today_str}")
 
 
 async def _run_startup_briefing():
@@ -281,8 +292,7 @@ async def _run_startup_briefing():
     except Exception:
         pass
 
-    # Small delay so the Slack connection has time to establish before we post
-    await asyncio.sleep(6)
+    await asyncio.sleep(3)
 
     try:
         await _run_morning_briefing()
@@ -292,23 +302,583 @@ async def _run_startup_briefing():
         print(f"[briefing] startup briefing failed: {e}")
 
 
-async def _post_restart_announcement():
-    """If this startup was triggered by a self-restart, notify Ky on Slack."""
+async def _run_weekly_briefing():
+    """Monday morning: dispatch Connor, Wade, and Tristan for a full weekly business report."""
+    from datetime import date
+    from tina.agents.data      import DataAgent
+    from tina.agents.marketing import MarketingAgent
+    from tina.agents.email     import EmailAgent
+
+    today_str = date.today().strftime("%A, %d %B %Y")
+    print(f"[weekly-briefing] starting for {today_str}")
+
+    # Tina speaks a short kickoff while agents run in background
+    kickoff = (
+        f"Good morning Ky. It's Monday — weekly briefing time. "
+        "I've asked Connor to pull the business numbers, Wade to plan this week's content, "
+        "and Tristan to summarise the inbox. I'll let you know as each one comes back."
+    )
+    await broadcast({"type": "response", "text": kickoff})
+    await _tts_stream(kickoff)
+
+    week_str = date.today().strftime("week of %d %B %Y")
+
+    # Connor — business metrics
+    await background_runner(
+        "data", DataAgent,
+        f"WEEKLY BUSINESS REPORT — {week_str}\n\n"
+        "Pull and summarise all available business metrics for this week:\n"
+        "1. Stripe: call stripe_overview for MRR, active subscriptions, past-due, and 30-day revenue\n"
+        "2. KAOS platform: call kaos_overview for live user count, waitlist, subscriptions, and open support tickets\n"
+        "3. Facebook: call meta_page_analytics (period=week) for impressions, reach, engaged users, and top posts\n"
+        "4. Instagram: call meta_instagram_analytics (days=7) for impressions, reach, and top posts\n"
+        "5. Meta Ads: call meta_ads_overview (period=last_7_days) if ads are running\n"
+        "6. Any financial summaries or spreadsheets in Generated Docs/Connor/\n"
+        "7. Compare against prior week if prior data exists in the vault\n"
+        "Write a concise business summary: top-line numbers, week-on-week change, any anomalies. "
+        "Save to vault at 02-Tina-Memory/Agents/Connor/ and report back.",
+        None,
+    )
+
+    # Wade — weekly content plan
+    await background_runner(
+        "marketing", MarketingAgent,
+        f"WEEKLY CONTENT PLAN — {week_str}\n\n"
+        "Start by reviewing last week's performance: call meta_page_analytics and meta_instagram_analytics "
+        "to see which posts got the most engagement. Note the top performer and why it likely worked.\n\n"
+        "Then research what's trending this week in the tech/AI/business space relevant to KLJ Systems. "
+        "Propose a content plan for the week: 3-5 post ideas across Facebook and Instagram with hooks, "
+        "angles, and recommended formats — informed by what performed well last week. "
+        "Save to vault at 02-Tina-Memory/Agents/Wade/ and report back.",
+        None,
+    )
+
+    # Tristan — inbox summary
+    await background_runner(
+        "email", EmailAgent,
+        f"WEEKLY INBOX SUMMARY — {week_str}\n\n"
+        "Review the last 7 days of emails across all accounts (personal, business_outlook). "
+        "Summarise: total received, key threads that need follow-up, anyone who hasn't been replied to, "
+        "and any recurring senders or topics. Save notes to vault at 02-Tina-Memory/Agents/Tristan/ and report back.",
+        None,
+    )
+
+    print(f"[weekly-briefing] all agents dispatched for {today_str}")
+
+
+async def _schedule_weekly_briefing():
+    """Fire the weekly briefing every Monday morning after the daily briefing."""
+    from datetime import date
+    WEEKLY_BRIEFING_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "weekly_briefing_date.txt"
+    )
+    WEEKLY_BRIEFING_FILE = os.path.normpath(WEEKLY_BRIEFING_FILE)
+
+    while True:
+        await asyncio.sleep(60)  # check every minute
+        now  = datetime.now()
+        today = date.today()
+
+        # Only fire on Monday (weekday 0) after 7am
+        if now.weekday() != 0 or now.hour < 7:
+            continue
+
+        week_key = today.strftime("%Y-W%W")
+        try:
+            if os.path.exists(WEEKLY_BRIEFING_FILE):
+                if open(WEEKLY_BRIEFING_FILE).read().strip() == week_key:
+                    await asyncio.sleep(3600)  # already ran this week — check again in an hour
+                    continue
+        except Exception:
+            pass
+
+        try:
+            await _run_weekly_briefing()
+            os.makedirs(os.path.dirname(WEEKLY_BRIEFING_FILE), exist_ok=True)
+            with open(WEEKLY_BRIEFING_FILE, "w") as f:
+                f.write(week_key)
+        except Exception as e:
+            print(f"[weekly-briefing] failed: {e}")
+
+        await asyncio.sleep(3600)  # don't re-check for an hour after running
+
+
+async def _run_email_triage():
+    """Dispatch Tristan to autonomously triage all inboxes."""
+    from tina.agents.email import EmailAgent
+    from datetime import date
+
+    print(f"[email-triage] starting autonomous triage — {date.today().isoformat()}")
+
+    task = (
+        "AUTONOMOUS TRIAGE MODE — you are running on a scheduled basis without a human in the loop.\n\n"
+        "For each account (personal, business_outlook):\n"
+        "1. email_list to get unread emails (limit 30)\n"
+        "2. For each unread email, classify it into one of:\n"
+        "   - IGNORE: newsletters, automated notifications, marketing, receipts with no action needed\n"
+        "   - LOW: FYI emails, cc'd threads, things Ky should know but don't need a reply\n"
+        "   - NORMAL: emails that need a reply but aren't time-sensitive\n"
+        "   - URGENT: anything time-sensitive, from an important contact, or requiring immediate action\n"
+        "3. For IGNORE emails: email_mark_read to clear them silently\n"
+        "4. For LOW emails: email_mark_read and log them\n"
+        "5. For NORMAL and URGENT emails: do NOT auto-send — instead draft a reply and save it\n\n"
+        "At the end, produce a triage report:\n"
+        "- Total emails reviewed\n"
+        "- IGNORED (count + brief list)\n"
+        "- LOW (count + brief list)\n"
+        "- NORMAL — needs reply (sender, subject, your drafted reply)\n"
+        "- URGENT — needs reply (sender, subject, your drafted reply, why it's urgent)\n\n"
+        "Save the full triage report to vault at 02-Tina-Memory/Agents/Tristan/ "
+        f"with filename {date.today().isoformat()}-triage.md\n\n"
+        "Your completion report should be a spoken-friendly summary Tina can read aloud: "
+        "how many emails, how many cleared, how many need attention."
+    )
+
+    await background_runner("email", EmailAgent, task, None)
+    print("[email-triage] Tristan dispatched")
+
+
+async def _schedule_email_triage():
+    """Run email triage at 8am and 2pm daily."""
+    TRIAGE_HOURS = {8, 14}
+    _triage_done = set()  # tracks "YYYY-MM-DD-HH" keys already run
+
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        key = now.strftime("%Y-%m-%d-") + str(now.hour)
+
+        if now.hour in TRIAGE_HOURS and key not in _triage_done:
+            _triage_done.add(key)
+            # Keep set small — discard keys older than today
+            today_prefix = now.strftime("%Y-%m-%d")
+            _triage_done = {k for k in _triage_done if k.startswith(today_prefix)}
+            try:
+                await _run_email_triage()
+            except Exception as e:
+                print(f"[email-triage] scheduler error: {e}")
+
+
+# ── Inbox pipeline utilities ──────────────────────────────────────────────────
+
+_VAULT_ROOT   = Path(VAULT_DIR)
+_INBOX_DIR    = _VAULT_ROOT / "00-Inbox"
+_PROPOSED_DIR = _VAULT_ROOT / "01-Projects" / "Proposed"
+_ACTIONS_DIR  = _VAULT_ROOT / "02-Tina-Memory" / "Actions"
+_IDEAS_DIR    = _VAULT_ROOT / "02-Tina-Memory" / "Ideas"
+_RESOURCES_DIR= _VAULT_ROOT / "03-Resources"
+
+_CLASSIFY_PROMPT = """Classify this captured note. Output ONLY valid JSON — no markdown fences, no other text.
+
+Classification options:
+- "project": multi-step work requiring agents or significant effort spanning days or weeks
+- "action": a single quick task for one person or agent
+- "idea": concept or inspiration for future consideration, not immediately actionable
+- "reference": information to store for future lookup — not a task
+- "escalate": unclear or genuinely requires human judgment to classify
+
+Output exactly this JSON:
+{"classification": "project|action|idea|reference|escalate", "title": "short title in 5-8 words", "reasoning": "one sentence"}"""
+
+
+def _parse_frontmatter(content: str) -> tuple[dict, str]:
+    """Parse simple YAML frontmatter. Returns (metadata_dict, body)."""
+    if not content.startswith("---"):
+        return {}, content
+    end = content.find("\n---\n", 3)
+    if end == -1:
+        return {}, content
+    fm_text = content[3:end].strip()
+    body    = content[end + 5:]
+    metadata: dict = {}
+    for line in fm_text.splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            metadata[key.strip()] = val.strip()
+    return metadata, body
+
+
+def _write_frontmatter(metadata: dict, body: str) -> str:
+    fm_lines = [f"{k}: {v}" for k, v in metadata.items()]
+    return "---\n" + "\n".join(fm_lines) + "\n---\n\n" + body.lstrip()
+
+
+def _safe_slug(title: str) -> str:
+    """Convert a title to a safe folder/filename slug."""
+    slug = re.sub(r"[^\w\s-]", "", title.lower())
+    return re.sub(r"[\s_]+", "-", slug).strip("-")[:60]
+
+
+async def _run_inbox_classifier():
+    """Classify all unprocessed items in 00-Inbox/ using Haiku."""
+    _INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    unprocessed = [
+        f for f in _INBOX_DIR.glob("*.md")
+        if _parse_frontmatter(f.read_text(encoding="utf-8"))[0].get("status") == "unprocessed"
+    ]
+    if not unprocessed:
+        return
+
+    print(f"[inbox-classifier] {len(unprocessed)} item(s) to classify")
+    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+
+    from config import MODEL as HAIKU_MODEL
+    for filepath in unprocessed:
+        try:
+            raw = filepath.read_text(encoding="utf-8")
+            meta, body = _parse_frontmatter(raw)
+
+            resp = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=256,
+                system=_CLASSIFY_PROMPT,
+                messages=[{"role": "user", "content": body.strip()[:2000]}],
+            )
+            text = next((b.text for b in resp.content if hasattr(b, "text")), "{}")
+            decision = _json.loads(text)
+
+            meta["status"]         = "classified"
+            meta["classification"] = decision.get("classification", "escalate")
+            meta["title"]          = decision.get("title", filepath.stem)
+            meta["reasoning"]      = decision.get("reasoning", "")
+            filepath.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+            print(f"[inbox-classifier] {filepath.name} → {meta['classification']}: {meta['title']}")
+        except Exception as e:
+            print(f"[inbox-classifier] failed on {filepath.name}: {e}")
+
+
+async def _run_inbox_router():
+    """Route classified inbox items to the correct vault folders."""
+    classified = [
+        f for f in _INBOX_DIR.glob("*.md")
+        if _parse_frontmatter(f.read_text(encoding="utf-8"))[0].get("status") == "classified"
+    ]
+    if not classified:
+        return
+
+    from tina.agents.research import ResearchAgent
+
+    for filepath in classified:
+        try:
+            raw          = filepath.read_text(encoding="utf-8")
+            meta, body   = _parse_frontmatter(raw)
+            classification = meta.get("classification", "escalate")
+            title          = meta.get("title", filepath.stem)
+            slug           = _safe_slug(title)
+            date_prefix    = meta.get("date", datetime.now().isoformat())[:10]
+            new_filename   = f"{date_prefix}-{slug}.md"
+
+            if classification == "project":
+                dest_dir = _PROPOSED_DIR / slug
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                meta["status"] = "proposed"
+                dest = dest_dir / "capture.md"
+                dest.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+                filepath.unlink()
+                print(f"[inbox-router] {title} → 01-Projects/Proposed/{slug}/")
+
+                # Auto-dispatch Charlie to research this project
+                asyncio.create_task(_auto_research_project(slug, title, body.strip()))
+
+            elif classification == "action":
+                _ACTIONS_DIR.mkdir(parents=True, exist_ok=True)
+                meta["status"] = "routed"
+                dest = _ACTIONS_DIR / new_filename
+                dest.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+                filepath.unlink()
+                print(f"[inbox-router] {title} → 02-Tina-Memory/Actions/")
+
+            elif classification == "idea":
+                _IDEAS_DIR.mkdir(parents=True, exist_ok=True)
+                meta["status"] = "routed"
+                dest = _IDEAS_DIR / new_filename
+                dest.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+                filepath.unlink()
+                print(f"[inbox-router] {title} → 02-Tina-Memory/Ideas/")
+
+            elif classification == "reference":
+                _RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
+                meta["status"] = "routed"
+                dest = _RESOURCES_DIR / new_filename
+                dest.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+                filepath.unlink()
+                print(f"[inbox-router] {title} → 03-Resources/")
+
+            elif classification == "escalate":
+                meta["status"] = "needs-review"
+                filepath.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+                notice = f"Ky, I captured an item I'm not sure how to classify: \"{title}\". It's in your inbox — can you tell me what to do with it?"
+                await broadcast({"type": "response", "text": notice})
+                await _tts_stream(notice)
+                print(f"[inbox-router] {title} → escalated to Ky")
+
+        except Exception as e:
+            print(f"[inbox-router] failed on {filepath.name}: {e}")
+
+
+async def _auto_research_project(slug: str, title: str, content: str):
+    """Dispatch Charlie to auto-research a new project from the inbox pipeline."""
+    from tina.agents.research import ResearchAgent
+    task = (
+        f"AUTO-RESEARCH — new project captured from inbox\n\n"
+        f"Project: {title}\n\n"
+        f"Raw capture:\n{content}\n\n"
+        "Research this project and produce a proposed plan document:\n"
+        "1. What is this project? Define the scope and goal clearly.\n"
+        "2. Research the space — what approaches exist, what tools/frameworks are relevant, who else does this?\n"
+        "3. Proposed plan: numbered phases, estimated effort per phase, dependencies, risks.\n"
+        "4. Open questions that need Ky's input before starting.\n\n"
+        f"Save the plan to vault at 01-Projects/Proposed/{slug}/ as research.md\n"
+        "Use vault_write with folder=01-Projects/Proposed/{slug} and filename=research.md\n\n"
+        "End with: STATUS: RESEARCH COMPLETE — awaiting Ky's approval to promote."
+    ).replace("{slug}", slug)
+    await background_runner("research", ResearchAgent, task, None)
+
+
+async def _run_kaos_monitor():
+    """Check KAOS for new support tickets, subscription changes, and waitlist signups."""
+    from tools.kaos_tool import _client as _kaos_client, KAOS_SUPABASE_URL
+    if not KAOS_SUPABASE_URL:
+        return
+
+    _KAOS_STATE_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "kaos_last_check.txt"
+    )
+    _KAOS_STATE_FILE = os.path.normpath(_KAOS_STATE_FILE)
+
+    # Load last-seen timestamps
+    last_ticket_ts = last_waitlist_ts = last_sub_ts = "1970-01-01T00:00:00+00:00"
+    if os.path.exists(_KAOS_STATE_FILE):
+        try:
+            state = _json.loads(open(_KAOS_STATE_FILE).read())
+            last_ticket_ts  = state.get("last_ticket",   last_ticket_ts)
+            last_waitlist_ts= state.get("last_waitlist", last_waitlist_ts)
+            last_sub_ts     = state.get("last_sub",      last_sub_ts)
+        except Exception:
+            pass
+
+    def _check():
+        db = _kaos_client()
+        alerts = []
+
+        # New support tickets
+        new_tickets = (db.table("support_tickets")
+            .select("title, submitted_by_name, submitted_by_email, type, workspace_id")
+            .gt("created_at", last_ticket_ts)
+            .order("created_at", desc=False)
+            .execute().data or [])
+        for t in new_tickets:
+            who = t.get("submitted_by_name") or t.get("submitted_by_email") or "someone"
+            alerts.append(f"New {t.get('type','support')} ticket from {who}: {t.get('title','')}")
+
+        # New waitlist signups
+        new_waitlist = (db.table("waitlist")
+            .select("email, name")
+            .gt("created_at", last_waitlist_ts)
+            .order("created_at", desc=False)
+            .execute().data or [])
+        if new_waitlist:
+            names = ", ".join(w.get("name") or w.get("email","?") for w in new_waitlist[:3])
+            alerts.append(f"{len(new_waitlist)} new waitlist signup{'s' if len(new_waitlist)>1 else ''}: {names}")
+
+        # Subscription changes
+        new_subs = (db.table("workspace_subscriptions")
+            .select("status, workspace_id, workspaces(name)")
+            .gt("updated_at", last_sub_ts)
+            .order("updated_at", desc=False)
+            .execute().data or [])
+        for s in new_subs:
+            ws_name = (s.get("workspaces") or {}).get("name", "a workspace")
+            status  = s.get("status", "?")
+            if status == "active":
+                alerts.append(f"KAOS subscription activated: {ws_name} is now paying.")
+            elif status in ("cancelled", "canceled"):
+                alerts.append(f"KAOS cancellation: {ws_name} has cancelled.")
+            elif status == "trialing":
+                alerts.append(f"KAOS trial started: {ws_name} is now trialing.")
+
+        # New Sentry errors
+        last_sentry_ts = state.get("last_sentry", "1970-01-01T00:00:00") if os.path.exists(_KAOS_STATE_FILE) else "1970-01-01T00:00:00"
+        from tools.kaos_tool import sentry_new_issues_since
+        new_errors = sentry_new_issues_since(last_sentry_ts)
+        fatal = [e for e in new_errors if e.get("level") in ("fatal", "error")]
+        if fatal:
+            titles = "; ".join(e.get("title", "?") for e in fatal[:3])
+            alerts.append(f"{len(fatal)} new KAOS error{'s' if len(fatal)>1 else ''} in Sentry: {titles}")
+
+        # Save updated timestamps
+        new_state = {
+            "last_ticket":   (new_tickets[-1]["created_at"]  if new_tickets  else last_ticket_ts),
+            "last_waitlist": (new_waitlist[-1]["created_at"] if new_waitlist else last_waitlist_ts),
+            "last_sub":      (new_subs[-1]["updated_at"]     if new_subs     else last_sub_ts),
+            "last_sentry":   (new_errors[-1]["firstSeen"]    if new_errors   else last_sentry_ts),
+        }
+        with open(_KAOS_STATE_FILE, "w") as f:
+            _json.dump(new_state, f)
+
+        return alerts
+
+    try:
+        alerts = await asyncio.to_thread(_check)
+        for alert in alerts:
+            print(f"[kaos-monitor] {alert}")
+            await broadcast({"type": "response", "text": alert})
+            await _tts_stream(alert)
+            await _slack_post(f":warning: *KAOS* — {alert}")
+    except Exception as e:
+        print(f"[kaos-monitor] error: {e}")
+
+
+async def _schedule_kaos_monitor():
+    """Check KAOS every 15 minutes for new tickets, signups, and subscription changes."""
+    await asyncio.sleep(180)  # Let the system settle
+    while True:
+        try:
+            await _run_kaos_monitor()
+        except Exception as e:
+            print(f"[kaos-monitor] scheduler error: {e}")
+        await asyncio.sleep(900)  # 15 minutes
+
+
+async def _run_pattern_scan():
+    """Dispatch Connor to analyse KAOS support tickets for recurring patterns."""
+    from tina.agents.data import DataAgent
+    from datetime import date
+
+    today_str = date.today().strftime("%d %B %Y")
+    print(f"[pattern-scan] starting for {today_str}")
+
+    task = (
+        f"FEATURE REQUEST PATTERN SCAN — {today_str}\n\n"
+        "Analyse KAOS support tickets to identify recurring patterns and product signals.\n\n"
+        "STEPS:\n"
+        "1. Call kaos_support_tickets with no status filter and limit=100 to get all recent tickets\n"
+        "2. Call kaos_overview for total context (user count, open ticket count)\n"
+        "3. Read through ALL tickets and group them by recurring theme — "
+        "look for tickets describing the same problem, requesting the same feature, "
+        "or expressing the same confusion\n"
+        "4. For each theme, count occurrences and note example ticket descriptions\n\n"
+        "CLASSIFICATION:\n"
+        "- HIGH signal: 5+ tickets on the same theme — clear product gap, action required\n"
+        "- MEDIUM signal: 3-4 tickets — emerging pattern worth watching\n"
+        "- EMERGING: 2 tickets — log it but no escalation needed\n"
+        "- Ignore one-off tickets with no match\n\n"
+        "OUTPUT:\n"
+        "Write a pattern report to vault at 02-Tina-Memory/Agents/Connor/ "
+        f"with filename {date.today().isoformat()}-kaos-pattern-scan.md\n"
+        "Include for each pattern: theme name, signal level, ticket count, example descriptions, suggested action\n\n"
+        "Your completion report must be spoken-friendly (2-3 sentences Tina can read aloud): "
+        "how many patterns found, the highest priority one, and whether Ky needs to act on anything this week."
+    )
+
+    await background_runner("data", DataAgent, task, None)
+    print("[pattern-scan] Connor dispatched")
+
+
+async def _schedule_pattern_scan():
+    """Run the feature request pattern scan every Sunday evening."""
+    PATTERN_SCAN_FILE = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "pattern_scan_date.txt"
+    ))
+
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+
+        # Fire on Sunday (weekday 6) at or after 18:00
+        if now.weekday() != 6 or now.hour < 18:
+            continue
+
+        week_key = now.strftime("%Y-W%W")
+        try:
+            if os.path.exists(PATTERN_SCAN_FILE):
+                if open(PATTERN_SCAN_FILE).read().strip() == week_key:
+                    await asyncio.sleep(3600)
+                    continue
+        except Exception:
+            pass
+
+        try:
+            await _run_pattern_scan()
+            os.makedirs(os.path.dirname(PATTERN_SCAN_FILE), exist_ok=True)
+            with open(PATTERN_SCAN_FILE, "w") as f:
+                f.write(week_key)
+        except Exception as e:
+            print(f"[pattern-scan] failed: {e}")
+
+        await asyncio.sleep(3600)
+
+
+async def _schedule_inbox_pipeline():
+    """Classify and route inbox items every 15 minutes."""
+    await asyncio.sleep(120)  # Let the system settle after startup
+    while True:
+        try:
+            await _run_inbox_classifier()
+            await _run_inbox_router()
+        except Exception as e:
+            print(f"[inbox-pipeline] error: {e}")
+        await asyncio.sleep(900)  # 15 minutes
+
+
+def _promote_project(project_name: str) -> str:
+    """Move a proposed project to an active project folder. Called by tool and REST endpoint."""
+    if not _PROPOSED_DIR.exists():
+        return f"No proposed projects found — {_PROPOSED_DIR} does not exist."
+
+    name_lower = project_name.lower()
+    name_words = set(name_lower.split())
+
+    # Find best match in Proposed/
+    candidates = [d for d in _PROPOSED_DIR.iterdir() if d.is_dir()]
+    if not candidates:
+        return "No proposed projects found in 01-Projects/Proposed/."
+
+    match = None
+    for d in candidates:
+        folder_lower = d.name.lower()
+        folder_words = set(folder_lower.replace("-", " ").split())
+        if name_lower in folder_lower or folder_words & name_words:
+            match = d
+            break
+
+    if not match:
+        names = ", ".join(d.name for d in candidates)
+        return f"No proposed project matching '{project_name}' found. Available: {names}"
+
+    # Move to active projects
+    active_dir = _VAULT_ROOT / "01-Projects" / match.name
+    if active_dir.exists():
+        return f"Project '{match.name}' already exists as an active project at 01-Projects/{match.name}/."
+
+    shutil.copytree(str(match), str(active_dir))
+
+    # Update status in capture.md if it exists
+    capture_file = active_dir / "capture.md"
+    if capture_file.exists():
+        raw = capture_file.read_text(encoding="utf-8")
+        meta, body = _parse_frontmatter(raw)
+        meta["status"] = "active"
+        capture_file.write_text(_write_frontmatter(meta, body), encoding="utf-8")
+
+    shutil.rmtree(str(match))
+
+    return (
+        f"Project '{match.name}' has been promoted to active status at 01-Projects/{match.name}/. "
+        "It's ready for execution."
+    )
+
+
+async def _post_restart_cleanup():
+    """Clean up the post_restart sentinel left by system_tool.restart_backend."""
     from config import BASE_DIR
     sentinel = os.path.join(BASE_DIR, "data", "post_restart.json")
-    if not os.path.exists(sentinel):
-        return
-    try:
-        with open(sentinel) as f:
-            data = _json.load(f)
-        os.remove(sentinel)
-        reason = data.get("reason", "code or config change")
-        kai_mention = f"<@{SLACK_KAI_USER_ID}>" if SLACK_KAI_USER_ID else "@Ky"
-        msg = f"{kai_mention} — I restarted successfully. Reason: {reason}. Everything looks good."
-        await asyncio.sleep(2)  # give Slack connection time to establish
-        await _slack_post(SLACK_CHANNEL_AGENTS, msg, token=SLACK_TINA_BOT_TOKEN)
-    except Exception as e:
-        print(f"[lifespan] post-restart announcement failed: {e}")
+    if os.path.exists(sentinel):
+        try:
+            os.remove(sentinel)
+            print("[lifespan] cleared post_restart sentinel")
+        except Exception:
+            pass
 
 
 async def _drain_preview_queue():
@@ -327,12 +897,17 @@ async def _drain_preview_queue():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(_start_slack())
     asyncio.create_task(_schedule_nightly_reindex())
     asyncio.create_task(_run_startup_briefing())
-    asyncio.create_task(_post_restart_announcement())
+    asyncio.create_task(_post_restart_cleanup())
     asyncio.create_task(_drain_preview_queue())
     asyncio.create_task(_resume_pending_tasks())
+    asyncio.create_task(_schedule_weekly_briefing())
+    asyncio.create_task(_schedule_email_triage())
+    asyncio.create_task(_schedule_inbox_pipeline())
+    asyncio.create_task(_schedule_kaos_monitor())
+    asyncio.create_task(_schedule_pattern_scan())
+    asyncio.create_task(_start_slack_listener())
     yield
 
 
@@ -348,9 +923,22 @@ app.add_middleware(
 
 connections: list[WebSocket] = []
 
-# Per-agent queues for Ky's direct replies in agent channels
-_agent_answer_queues: dict[str, asyncio.Queue] = {}
-_channel_name_cache:  dict[str, str]           = {}  # channel ID → "#name"
+# Approvals/questions pending from background agents — answered via voice or text input
+_pending_approvals: dict[str, dict] = {}  # agent_key → {queue, display}
+
+# Serialises all TTS output — prevents two agents speaking simultaneously
+_tts_lock = asyncio.Lock()
+
+_APPROVAL_WORDS = frozenset([
+    "yes", "approved", "approve", "go ahead", "go for it",
+    "good to go", "proceed", "looks good", "do it", "confirmed",
+    "yeah", "yep", "ok", "okay", "sure", "fine", "sounds good",
+    "ship it", "let's go", "lets go", "absolutely", "correct",
+])
+
+def _is_approval(text: str) -> bool:
+    lower = text.lower().strip().rstrip(".")
+    return lower in _APPROVAL_WORDS or any(kw in lower for kw in _APPROVAL_WORDS)
 
 
 async def broadcast(data: dict):
@@ -365,44 +953,76 @@ async def broadcast(data: dict):
             connections.remove(ws)
 
 
-# ── Background agent runner ───────────────────────────────────────────────────
-
-def _make_slack_client(token: str | None = None):
-    from slack_sdk import WebClient
-    return WebClient(token=token or SLACK_TINA_BOT_TOKEN)
-
-
-async def _slack_post(channel: str, message: str, token: str | None = None):
-    """Post to Slack using the provided token (agent-specific) or fall back to Tina's token."""
-    def _post():
-        _make_slack_client(token).chat_postMessage(channel=channel, text=message)
+async def _slack_post(text: str) -> None:
+    """Post a message to the main Slack channel."""
+    if not SLACK_TINA_BOT_TOKEN or not SLACK_CHANNEL:
+        return
     try:
-        await asyncio.to_thread(_post)
+        from slack_sdk.web.async_client import AsyncWebClient
+        client = AsyncWebClient(token=SLACK_TINA_BOT_TOKEN)
+        await client.chat_postMessage(channel=SLACK_CHANNEL, text=text)
     except Exception as e:
-        print(f"[Slack] post to {channel} failed: {e}")
+        print(f"[slack] post failed: {e}")
 
 
-async def _resolve_channel_name(channel_id: str) -> str:
-    """Resolve a Slack channel ID to its #name, with caching."""
-    if channel_id in _channel_name_cache:
-        return _channel_name_cache[channel_id]
+async def _handle_slack_message(text: str) -> None:
+    """Process a message from Ky via Slack — routes through TINA, reply posted back to Slack."""
+    await broadcast({"type": "heard", "text": f"[SLACK] {text}"})
+    await broadcast({"type": "state", "state": "thinking"})
+    async with _agent_lock:
+        reply = await agent.chat(text, background=True)
+    print(f"\n[TINA→SLACK] {reply}\n")
+    await broadcast({"type": "response", "text": reply})
+    await _slack_post(reply)
+    asyncio.create_task(_write_memory(text, reply, list(agent.history)))
+
+
+async def _start_slack_listener() -> None:
+    """Start the Slack Socket Mode listener so Ky can talk to TINA from Slack."""
+    if not SLACK_APP_TOKEN or not SLACK_TINA_BOT_TOKEN:
+        print("[slack] APP_TOKEN or BOT_TOKEN not configured — skipping listener")
+        return
     try:
-        def _fetch():
-            from slack_sdk import WebClient
-            info = WebClient(token=SLACK_TINA_BOT_TOKEN).conversations_info(channel=channel_id)
-            return "#" + info["channel"]["name"]
-        name = await asyncio.to_thread(_fetch)
-        _channel_name_cache[channel_id] = name
-        return name
-    except Exception:
-        return channel_id
+        from slack_sdk.socket_mode.aiohttp import SocketModeClient
+        from slack_sdk.socket_mode.response import SocketModeResponse
+        from slack_sdk.web.async_client import AsyncWebClient
+    except ImportError:
+        print("[slack] slack_sdk aiohttp support not installed — run: pip install slack_sdk[aiohttp]")
+        return
 
+    web_client = AsyncWebClient(token=SLACK_TINA_BOT_TOKEN)
+    sm_client  = SocketModeClient(app_token=SLACK_APP_TOKEN, web_client=web_client)
+
+    async def handle_event(client, req):
+        if req.type == "events_api":
+            await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+            event = req.payload.get("event", {})
+            if (
+                event.get("type") == "message"
+                and not event.get("bot_id")
+                and not event.get("subtype")
+                and (not SLACK_KY_USER_ID or event.get("user") == SLACK_KY_USER_ID)
+            ):
+                text = event.get("text", "").strip()
+                if text:
+                    asyncio.create_task(_handle_slack_message(text))
+
+    sm_client.socket_mode_request_listeners.append(handle_event)
+    await sm_client.connect()
+    print("[slack] Socket Mode listener connected")
+    await asyncio.sleep(float("inf"))
+
+
+# ── Background agent runner ───────────────────────────────────────────────────
 
 async def _get_tina_answer(question: str) -> str:
     """Answer a clarifying question from an agent using Tina's current conversation context."""
     try:
-        client   = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        messages = list(agent.history) + [{
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        # Sanitize history before use — a corrupted turn causes a 400 that
+        # silently returns the fallback, leaving the agent with no real answer.
+        clean_history = TinaAgent._sanitize_history(list(agent.history))
+        messages = clean_history + [{
             "role":    "user",
             "content": (
                 f"One of your specialist agents has a clarifying question:\n\n{question}\n\n"
@@ -459,57 +1079,6 @@ async def _should_escalate_to_kai(question: str) -> bool:
         return False  # default to auto on error
 
 
-_AGENT_PERSONAS = {
-    "Sam":     "You are Sam — a dry, goofy but technically sharp coding agent.",
-    "Charlie": "You are Charlie — a thorough, curious research agent who is precise about sources.",
-    "Tristan": "You are Tristan — a precise, professional email agent. You are measured and clear, never casual.",
-    "Connor":  "You are Connor — an analytical data agent who is direct and numbers-focused.",
-    "Wade":    "You are Wade — a creative, strategic marketing agent who is energetic and trend-savvy.",
-}
-
-def _agent_persona(display: str) -> str:
-    return _AGENT_PERSONAS.get(display, f"You are {display}, a specialist AI agent.")
-
-
-async def _sam_acknowledgment(task: str, display: str = "Sam") -> str:
-    """Agent 'on it' reply before work starts."""
-    try:
-        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=50,
-            system=(
-                f"{_agent_persona(display)} "
-                "Write a single short acknowledgment (under 15 words) that you're starting the task. "
-                "Be natural, in character. No preamble. No sign-off."
-            ),
-            messages=[{"role": "user", "content": f"Task: {task[:150]}"}],
-        )
-        return next((b.text for b in resp.content if hasattr(b, "text")), "On it.")
-    except Exception:
-        return "On it."
-
-
-async def _sam_completion_msg(task: str, result: str, tina_mention: str, display: str = "Sam") -> str:
-    """Agent '@Tina done' completion message."""
-    try:
-        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=80,
-            system=(
-                f"{_agent_persona(display)} "
-                f"Write a short completion message starting with '{tina_mention}' (max 25 words). "
-                "Say you're done and mention specifically what was completed (key outcomes, recipients, file names, etc.). "
-                "In character. No preamble."
-            ),
-            messages=[{"role": "user", "content": f"Task: {task[:100]}\nResult: {result[:400]}"}],
-        )
-        return next((b.text for b in resp.content if hasattr(b, "text")), f"{tina_mention} done.")
-    except Exception:
-        return f"{tina_mention} done."
-
-
 async def _tina_verbal_summary(display: str, result: str) -> str:
     """Short spoken sentence for Tina to say to Ky when a background agent finishes."""
     try:
@@ -548,28 +1117,34 @@ async def _agent_verify_response(display: str, task: str, result: str) -> tuple[
         if sig in tail:
             return False, f"Task incomplete — result ends with failure signal: \"{sig}\". Check the full output."
 
-    # Suspiciously short result for a real task
-    if len(result.strip()) < 80 and len(task) > 300:
+    # Suspiciously short result — only fail if truly empty or near-empty.
+    # A short but valid completion summary (e.g. "Done. Files at ...") must pass.
+    if len(result.strip()) < 20 and len(task) > 300:
         return False, "Result is too short for this task — likely incomplete or crashed early."
 
     # Haiku self-assessment as the final check
+    # Use the tail of the result — that's where conclusions and completion status live.
+    # Include a short head for context, then the final 700 chars where the outcome is stated.
     try:
+        head = result[:200]
+        tail = result[-700:] if len(result) > 900 else ""
+        log_excerpt = head + ("\n…\n" + tail if tail else "")
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
             system=(
                 "You are a task-completion auditor for an AI assistant system. "
-                "You will be given a task brief and the output log produced by a specialist agent that ran it. "
-                "Your job is to assess whether the output log shows the task was completed successfully.\n\n"
-                "Look for: explicit success confirmation, expected outputs present, no error messages, "
-                "no 'failed', 'unable', 'could not', or 'timed out' in the log tail.\n\n"
+                "You will be given a task brief and an excerpt from the agent's output log (start + end). "
+                "Your job is to assess whether the log shows the task was completed successfully.\n\n"
+                "Focus on the END of the log — that is where the final outcome is stated. "
+                "Look for: explicit success confirmation, files/records confirmed written, no unresolved errors.\n\n"
                 'Respond with JSON only: {"completed": true/false, "message": "1-2 sentence summary for Tina"}\n\n'
-                "If completed: state what the log confirms was done (recipients, files, outcomes).\n"
+                "If completed: name exactly what the log confirms was done (file paths, recipients, outcomes).\n"
                 "If failed or partial: state what the log shows went wrong.\n"
-                "Do NOT question whether the actions were possible — trust the log. Be direct. No preamble."
+                "Be strict — 'I will do X' is not the same as 'X was done'. Do not infer completion from intent. No preamble."
             ),
-            messages=[{"role": "user", "content": f"Task brief: {task[:400]}\n\nAgent output log: {result[:600]}"}],
+            messages=[{"role": "user", "content": f"Task brief: {task[:400]}\n\nAgent output log (start + end):\n{log_excerpt}"}],
         )
         text = next((b.text for b in resp.content if hasattr(b, "text")), "")
         match = re.search(r'\{.*\}', text, re.DOTALL)
@@ -606,7 +1181,7 @@ async def _resume_pending_tasks() -> None:
     files = [f for f in os.listdir(PENDING_TASKS_DIR) if f.endswith(".json")]
     if not files:
         return
-    await asyncio.sleep(4)  # let Slack connection establish first
+    await asyncio.sleep(4)
     for fname in files:
         path = os.path.join(PENDING_TASKS_DIR, fname)
         try:
@@ -620,11 +1195,7 @@ async def _resume_pending_tasks() -> None:
                 print(f"[resume] Unknown agent '{agent_key}' in {fname} — removing")
                 os.remove(path)
                 continue
-            meta    = _AGENT_META.get(agent_key, {})
-            channel = meta.get("channel", SLACK_CHANNEL)
             print(f"[resume] Resuming interrupted {agent_key} task: {task[:60]}...")
-            await _slack_post(channel, "_Resuming after restart — picking up where I left off._",
-                              token=meta.get("token"))
             asyncio.create_task(_run_agent_background(agent_key, cls, task, None,
                                                       task_id=task_id, retried=True))
         except Exception as e:
@@ -640,27 +1211,11 @@ async def background_runner(agent_key: str, cls, task: str, on_tool):
 
 async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
                                 task_id: str = None, retried: bool = False):
-    """Runs a specialist agent independently with Slack as the conversation channel."""
+    """Runs a specialist agent independently. Results delivered via dashboard + TTS."""
     from tina.agent_state import start_task, record_tool, end_task, summarize_input
 
-    meta        = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA", "channel": SLACK_CHANNEL, "token": None})
-    display     = meta["display"]
-    channel     = meta.get("channel", SLACK_CHANNEL)
-    agent_token = meta.get("token")
-    tina_token  = SLACK_TINA_BOT_TOKEN
-
-    # Build @mention for whichever agent is running (not always Sam)
-    _agent_uid   = {
-        "coding":    SLACK_SAM_USER_ID,
-        "research":  SLACK_CHARLIE_USER_ID,
-        "email":     SLACK_TRISTAN_USER_ID,
-        "data":      SLACK_CONNOR_USER_ID,
-        "marketing": SLACK_WADE_USER_ID,
-    }.get(agent_key, "")
-    sam_mention   = f"<@{SLACK_SAM_USER_ID}>"  if SLACK_SAM_USER_ID  else "@Sam"
-    agent_mention = f"<@{_agent_uid}>"          if _agent_uid          else f"@{display}"
-    tina_mention  = f"<@{SLACK_TINA_USER_ID}>" if SLACK_TINA_USER_ID else "@Tina"
-    kai_mention   = f"<@{SLACK_KAI_USER_ID}>"  if SLACK_KAI_USER_ID  else "@Ky"
+    meta    = _AGENT_META.get(agent_key, {"display": agent_key, "color": "#8B5CF6", "glow": "#A78BFA"})
+    display = meta["display"]
 
     async def tracking_on_tool(name: str, inputs: dict = None):
         record_tool(agent_key, name, summarize_input(name, inputs or {}))
@@ -673,152 +1228,96 @@ async def _run_agent_background(agent_key: str, cls, task: str, on_tool,
             await broadcast(event)
 
     async def question_handler(question: str) -> str:
-        await _slack_post(channel, question, token=agent_token)
+        """Agent has a clarifying question — auto-answer or escalate to Ky via TTS."""
         escalate, tina_answer = await asyncio.gather(
             _should_escalate_to_kai(question),
             _get_tina_answer(question),
         )
         if not escalate:
-            await _slack_post(channel, tina_answer, token=tina_token)
+            asyncio.create_task(_tts_stream(f"{display} has a question. {tina_answer}"))
+            await broadcast({"type": "response", "text": f"{display}: {question}\n\nTina: {tina_answer}"})
             return tina_answer
-        # Register queue BEFORE posting to Slack — prevents a reply arriving
-        # before the queue is ready (race condition that silently drops answers).
+        spoken = f"{display} needs your input. {question} Tina suggests: {tina_answer}"
+        await broadcast({"type": "response", "text": spoken})
         q: asyncio.Queue = asyncio.Queue()
-        _agent_answer_queues[channel] = q
-        await _slack_post(
-            channel,
-            f"[ACTION REQUIRED] {kai_mention} — I need your call on this. Sam will wait.\n\n"
-            f"_Tina's suggestion if you're unavailable: {tina_answer}_",
-            token=tina_token,
-        )
+        _pending_approvals[agent_key] = {"queue": q, "display": display}
+        asyncio.create_task(_tts_stream(spoken))
         try:
-            kai_answer = await asyncio.wait_for(q.get(), timeout=14400)
-            await _slack_post(channel, "Got it, thanks.", token=agent_token)
-            return kai_answer
+            return await asyncio.wait_for(q.get(), timeout=14400)
         except asyncio.TimeoutError:
-            await _slack_post(channel, "No response after 4 hours — proceeding with Tina's suggestion.", token=agent_token)
             return tina_answer
         finally:
-            _agent_answer_queues.pop(channel, None)
+            _pending_approvals.pop(agent_key, None)
 
     async def plan_handler(plan: str) -> str:
-        """Sam posts a plan — always routes to Ky for approval, never auto-answered."""
-        plan_msg = (
-            f"*Plan from {display}:*\n\n{plan}\n\n"
-            f"_{kai_mention} — reply `approved` to proceed, or give feedback to redirect._"
-        )
-        # Register queue BEFORE posting to Slack — same race-condition fix as question_handler.
+        """Agent has a plan — broadcast it and wait for Ky's voice approval."""
+        spoken = f"{display} has a plan ready and is waiting for your approval. Say approved when ready."
+        await broadcast({"type": "agent_plan", "agent": display, "key": agent_key, "plan": plan})
+        await broadcast({"type": "response", "text": spoken})
         q: asyncio.Queue = asyncio.Queue()
-        _agent_answer_queues[channel] = q
-        await _slack_post(channel, plan_msg, token=agent_token)
-        await _slack_post(
-            channel,
-            f"{tina_mention} {kai_mention} — {display} has a plan ready. Waiting for your go-ahead.",
-            token=tina_token,
-        )
+        _pending_approvals[agent_key] = {"queue": q, "display": display}
+        asyncio.create_task(_tts_stream(spoken))
         try:
-            feedback = await asyncio.wait_for(q.get(), timeout=86400)  # 24h
-            await _slack_post(channel, f"Got it — proceeding.", token=agent_token)
-            return feedback
+            return await asyncio.wait_for(q.get(), timeout=86400)
         except asyncio.TimeoutError:
-            await _slack_post(channel, "No response after 24 hours — proceeding with original plan.", token=agent_token)
             return "approved"
         finally:
-            _agent_answer_queues.pop(channel, None)
+            _pending_approvals.pop(agent_key, None)
 
     try:
-        if not retried:
-            # Step 1 — Tina @mentions the agent with the task brief
-            await _slack_post(channel, f"{agent_mention}\n\n{task}", token=tina_token)
-
-            # Step 2 — Agent acknowledges before starting work
-            ack = await _sam_acknowledgment(task, display)
-            await _slack_post(channel, ack, token=agent_token)
-
         start_task(agent_key, task)
         print(f"[{display}] background task started: {task[:80]}...")
+
+        async def _broadcast_start():
+            if retried:
+                await asyncio.sleep(3)
+            await broadcast({
+                "type":  "agent_background_start",
+                "agent": meta["display"],
+                "key":   agent_key,
+                "color": meta.get("color", "#8B5CF6"),
+                "glow":  meta.get("glow",  "#A78BFA"),
+                "task":  task[:120],
+            })
+        asyncio.create_task(_broadcast_start())
+
         specialist = cls()
         result     = await specialist.run(task, on_tool=tracking_on_tool, on_tool_result=tracking_on_tool_result, question_handler=question_handler, plan_handler=plan_handler)
 
         print(f"[{display}] background task complete ({len(result)} chars)")
 
-        # Step 3 — Agent @mentions Tina with a natural completion summary, then posts the full output
-        completion_msg = await _sam_completion_msg(task, result, tina_mention, display)
-        full_output = result[:2000] + (f"\n_(truncated — {len(result):,} chars total)_" if len(result) > 2000 else "")
-        await _slack_post(channel, completion_msg, token=agent_token)
-        await _slack_post(channel, full_output, token=agent_token)
-
-        # Step 3b — Tina asks the agent to verify before reporting to Ky
-        await _slack_post(
-            channel,
-            f"{agent_mention} Before I tell Ky — did that complete fully? Any issues I should flag?",
-            token=tina_token,
-        )
         completed, verify_msg = await _agent_verify_response(display, task, result)
-        await _slack_post(channel, verify_msg, token=agent_token)
 
-        # Step 4 — Report to Ky based on verification result
         if completed:
             verbal_summary = await _tina_verbal_summary(display, result)
-            await _slack_post(SLACK_CHANNEL_AGENTS, f"{kai_mention} — {verbal_summary}", token=tina_token)
             summary = result[:300] + "…" if len(result) > 300 else result
             await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": summary})
             await broadcast({"type": "response", "text": verbal_summary})
             asyncio.create_task(_tts_stream(verbal_summary))
+            asyncio.create_task(_slack_post(f"*{display}* — {verbal_summary}"))
         else:
             issue_summary = f"{display} ran into an issue: {verify_msg}"
-            await _slack_post(
-                SLACK_CHANNEL_AGENTS,
-                f"{kai_mention} — heads up, {display}'s task didn't complete fully. Check #agents for details.",
-                token=tina_token,
-            )
             await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": f"Issue: {verify_msg}"})
             await broadcast({"type": "response", "text": issue_summary})
             asyncio.create_task(_tts_stream(issue_summary))
+            asyncio.create_task(_slack_post(f"*{display}* — {issue_summary}"))
             asyncio.create_task(_write_error_memory(agent_key, task, verify_msg))
 
     except asyncio.CancelledError:
-        # Server is restarting — leave the task file so it gets re-dispatched on startup
         print(f"[{display}] background task cancelled (server restart) — will resume on next start")
         raise
     except Exception as e:
         print(f"[{display}] background task error: {e}")
-        # Include what was completed before the crash so Ky knows where things stand
         from tina.agent_state import _progress
         completed_steps = _progress.get(agent_key, {}).get("history", [])
-        steps_note = ""
-        if completed_steps:
-            step_lines = "\n".join(
-                f"  • {s['tool']}: {s['summary']}" for s in completed_steps[-5:]
-            )
-            steps_note = f"\n\nCompleted {len(completed_steps)} step(s) before crash:\n{step_lines}"
-        await _slack_post(channel, f"Hit an error: {e}{steps_note}", token=agent_token)
         err_summary = f"Error after {len(completed_steps)} steps: {e}"
         await broadcast({"type": "agent_background_done", "agent": agent_key, "display": display, "summary": err_summary})
         await broadcast({"type": "response", "text": f"{display} hit an error: {e}"})
+        asyncio.create_task(_tts_stream(f"{display} hit an error. Check the logs for details."))
     finally:
         end_task(agent_key)
-        # Only clear the task file on normal completion/error, not on cancellation
         if task_id and not asyncio.current_task().cancelled():
             _clear_pending_task(task_id)
-
-
-async def _direct_agent_chat(agent_key: str, text: str, channel: str):
-    """Handle a direct message to an agent in their Slack channel."""
-    from tina.agent import _AGENTS
-    meta        = _AGENT_META.get(agent_key, {})
-    agent_token = meta.get("token")
-    cls         = _AGENTS.get(agent_key)
-    if not cls:
-        return
-    try:
-        specialist = cls()
-        result     = await specialist.run(text)
-        await _slack_post(channel, result[:2000], token=agent_token)
-        if len(result) > 2000:
-            await _slack_post(channel, f"_(response truncated — {len(result):,} chars total)_", token=agent_token)
-    except Exception as e:
-        await _slack_post(channel, f"Error: {e}", token=agent_token)
 
 
 async def diag_runner():
@@ -893,7 +1392,16 @@ async def synthesise(text: str) -> bytes | None:
                 "xi-api-key":   ELEVENLABS_API_KEY,
                 "Content-Type": "application/json",
             },
-            json={"text": text, "model_id": ELEVENLABS_MODEL},
+            json={
+                "text":     text,
+                "model_id": ELEVENLABS_MODEL,
+                "voice_settings": {
+                    "stability":        0.45,
+                    "similarity_boost": 0.80,
+                    "style":            0.10,
+                    "use_speaker_boost": True,
+                },
+            },
         )
         if r.status_code == 200:
             return r.content
@@ -926,34 +1434,59 @@ async def _pyttsx3_speak(text: str):
 
 
 async def _tts_stream(reply: str):
-    """Split reply into sentences, TTS each one. ElevenLabs → browser; pyttsx3 fallback → speakers."""
-    sentences = [s.strip() for s in _SENTENCE_RE.split(reply) if s.strip()]
-    if not sentences:
-        sentences = [reply.strip()]
-    await broadcast({"type": "state", "state": "speaking"})
+    """Send reply to ElevenLabs as one call. Serialised via _tts_lock — no simultaneous playback."""
+    async with _tts_lock:
+        await broadcast({"type": "state", "state": "speaking"})
 
-    if ELEVENLABS_API_KEY:
-        any_audio = False
-        for i, sentence in enumerate(sentences):
-            audio = await synthesise(sentence)
+        if ELEVENLABS_API_KEY:
+            audio = await synthesise(reply.strip())
             if audio:
-                any_audio = True
                 await broadcast({
                     "type":  "audio_chunk",
-                    "index": i,
+                    "index": 0,
                     "data":  base64.b64encode(audio).decode(),
                 })
-        if not any_audio:
-            print("[TTS] ElevenLabs returned nothing — falling back to pyttsx3")
+            else:
+                print("[TTS] ElevenLabs returned nothing — falling back to pyttsx3")
+                await _pyttsx3_speak(reply)
+        else:
             await _pyttsx3_speak(reply)
-    else:
-        await _pyttsx3_speak(reply)
 
-    await broadcast({"type": "audio_end"})
+        await broadcast({"type": "audio_end"})
 
 
 async def _handle_message(text: str):
     """Shared logic for text input from both voice (STT) and typed messages."""
+    # Internal system signals from the dashboard — inject into Tina's history for future
+    # context but do NOT generate a spoken response (the agent already spoke via verbal_summary).
+    if text.startswith('[SYSTEM:'):
+        agent.history.append({"role": "user", "content": text})
+        return
+
+    # Check if an agent is waiting for Ky's approval and this message is one
+    if _pending_approvals:
+        if _is_approval(text):
+            names = []
+            for ak, info in list(_pending_approvals.items()):
+                await info["queue"].put(text)
+                names.append(info["display"])
+            reply = f"Approved — passing that to {' and '.join(names)} now."
+            await broadcast({"type": "state", "state": "responding"})
+            await broadcast({"type": "response", "text": reply})
+            await _tts_stream(reply)
+            await broadcast({"type": "state", "state": "listening"})
+            return
+        # Not an approval word — could be feedback/redirect, route to the pending agent
+        if len(_pending_approvals) == 1:
+            ak, info = next(iter(_pending_approvals.items()))
+            await info["queue"].put(text)
+            reply = f"Got it — passing that feedback to {info['display']}."
+            await broadcast({"type": "state", "state": "responding"})
+            await broadcast({"type": "response", "text": reply})
+            await _tts_stream(reply)
+            await broadcast({"type": "state", "state": "listening"})
+            return
+
     await broadcast({"type": "state", "state": "thinking"})
 
     async def on_tool(name: str, inputs: dict = None):
@@ -1035,6 +1568,54 @@ async def trigger_briefing():
     return {"ok": True, "message": "Morning briefing started."}
 
 
+@app.post("/api/trigger-weekly-briefing")
+async def trigger_weekly_briefing():
+    """Manually trigger the weekly business briefing."""
+    asyncio.create_task(_run_weekly_briefing())
+    return {"ok": True, "message": "Weekly briefing started — Connor, Wade, and Tristan dispatched."}
+
+
+@app.post("/api/trigger-email-triage")
+async def trigger_email_triage():
+    """Manually trigger an autonomous email triage."""
+    asyncio.create_task(_run_email_triage())
+    return {"ok": True, "message": "Email triage started — Tristan is on it."}
+
+
+@app.post("/api/trigger-inbox-pipeline")
+async def trigger_inbox_pipeline():
+    """Manually run the classify + route pipeline right now."""
+    asyncio.create_task(_run_inbox_classifier())
+    asyncio.create_task(_run_inbox_router())
+    return {"ok": True, "message": "Inbox pipeline running — classifier then router."}
+
+
+@app.post("/api/trigger-pattern-scan")
+async def trigger_pattern_scan():
+    """Manually run the KAOS feature request pattern scan."""
+    asyncio.create_task(_run_pattern_scan())
+    return {"ok": True, "message": "Pattern scan started — Connor is analysing support tickets."}
+
+
+@app.post("/api/promote/{project_name}")
+async def promote_project_endpoint(project_name: str):
+    """Promote a proposed project to active status and dispatch Morgan to execute it."""
+    result = await asyncio.to_thread(_promote_project, project_name)
+    if "active status" in result:
+        from tina.agents.pm import ProjectManagerAgent
+        slug = re.sub(r"[^\w\s-]", "", project_name.lower())
+        slug = re.sub(r"[\s_]+", "-", slug).strip("-")[:60]
+        morgan_task = (
+            f"EXECUTE PROJECT: {project_name}\n\n"
+            f"{result}\n\n"
+            f"The active project folder is 01-Projects/{slug}/ (or the closest match). "
+            "Read capture.md and research.md from that folder, build an execution plan, "
+            "and coordinate the right agents to complete the project."
+        )
+        asyncio.create_task(background_runner("pm", ProjectManagerAgent, morgan_task, None))
+    return {"ok": True, "message": result}
+
+
 @app.get("/api/status")
 async def get_status():
     from config import DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY, OPENWEATHER_API_KEY
@@ -1087,7 +1668,7 @@ async def _run_diagnostics_task(on_result):
         if warn_count: parts.append(f"{warn_count} warning{'s' if warn_count > 1 else ''}")
         summary = " and ".join(parts)
         names   = ", ".join(label for label, _, _ in issues)
-        speech  = f"Diagnostic complete. I found {summary} — {names}. I'm sending the details to Slack with recommended fixes."
+        speech  = f"Diagnostic complete. I found {summary} — {names}. I'll go through the details now."
         await broadcast({"type": "response", "text": speech})
         asyncio.create_task(_tts_stream(speech))
         asyncio.create_task(_diag_review(issues))
@@ -1098,11 +1679,11 @@ async def _run_diagnostics_task(on_result):
 
 
 async def _diag_review(issues: list[tuple[str, str, str]]):
-    """Review diagnostic issues — fix what's possible, notify Ky about the rest via Slack."""
+    """Review diagnostic issues and give Ky a plain-spoken summary with fix actions."""
     lines = "\n".join(f"{status.upper()}: {label} — {detail}" for label, status, detail in issues)
     prompt = (
         f"A system diagnostic just completed and found these issues:\n\n{lines}\n\n"
-        "Write a brief Slack message for Ky summarising each issue and the exact action needed to fix it. "
+        "Write a brief spoken summary for Ky covering each issue and the exact action needed to fix it. "
         "Include relevant links (e.g. elevenlabs.io/subscription for credit issues). "
         "Be direct and specific. Plain text only, no markdown headers."
     )
@@ -1112,13 +1693,14 @@ async def _diag_review(issues: list[tuple[str, str, str]]):
         resp   = await client.messages.create(
             model=ORCHESTRATOR_MODEL,
             max_tokens=512,
-            system="You are Tina, a concise AI assistant. Write short, actionable Slack notifications.",
+            system="You are Tina, a concise AI assistant. Write short, actionable spoken summaries.",
             messages=[{"role": "user", "content": prompt}],
         )
         review = next((b.text for b in resp.content if hasattr(b, "text")), "")
         if review:
-            await _slack_post(SLACK_CHANNEL, f"*Diagnostic issues found:*\n\n{review}")
-            print(f"[diag_review] posted to Slack: {review[:80]}...")
+            await broadcast({"type": "response", "text": review})
+            asyncio.create_task(_tts_stream(review[:300]))
+            print(f"[diag_review] {review[:80]}...")
     except Exception as e:
         print(f"[diag_review] error: {e}")
 
@@ -1137,7 +1719,7 @@ async def spawn_hud():
 
 @app.post("/api/chat")
 async def chat_endpoint(body: dict):
-    """Shared chat entry point used by Slack and any other async callers."""
+    """HTTP chat endpoint for external callers."""
     text   = body.get("text", "").strip()
     source = body.get("source", "api")
     if not text:
@@ -1145,73 +1727,11 @@ async def chat_endpoint(body: dict):
     label = f"[{source.upper()}] {text}"
     await broadcast({"type": "heard", "text": label})
     async with _agent_lock:
-        # background=False: Slack waits for the full reply including any delegation
         reply = await agent.chat(text, background=False)
     await broadcast({"type": "response", "text": reply})
-    asyncio.create_task(_write_memory(text, reply))
+    asyncio.create_task(_write_memory(text, reply, list(agent.history)))
     asyncio.create_task(_tts_stream(reply))
     return {"reply": reply}
-
-
-async def _start_slack():
-    if not SLACK_TINA_BOT_TOKEN or not SLACK_APP_TOKEN:
-        print("[Slack] Tokens not configured — Slack listener not started.")
-        return
-    try:
-        from slack_bolt.async_app import AsyncApp as BoltApp
-        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-        import httpx as _httpx
-
-        bolt = BoltApp(token=SLACK_TINA_BOT_TOKEN)
-
-        @bolt.message("")
-        async def on_message(message, say, logger):
-            text = message.get("text", "").strip()
-            if not text or message.get("bot_id"):
-                return
-
-            # Resolve channel ID to name
-            channel_id   = message.get("channel", "")
-            channel_name = await _resolve_channel_name(channel_id)
-
-            # Agent is waiting for Ky's reply (escalated question)
-            if channel_name in _agent_answer_queues:
-                await _agent_answer_queues[channel_name].put(text)
-                return
-
-            # Group chat in #agents — route @mentions to the mentioned agent
-            if channel_name == SLACK_CHANNEL_AGENTS:
-                for user_id, agent_key in _USER_TO_AGENT.items():
-                    if f"<@{user_id}>" in text:
-                        asyncio.create_task(_direct_agent_chat(agent_key, text, SLACK_CHANNEL_AGENTS))
-                        return
-                # No agent @mentioned — fall through to Tina
-
-            # Direct message to an agent's own channel
-            agent_key = _CHANNEL_TO_AGENT.get(channel_name)
-            if agent_key:
-                asyncio.create_task(_direct_agent_chat(agent_key, text, channel_name))
-                return
-
-            # Otherwise route to Tina
-            try:
-                async with _httpx.AsyncClient(timeout=120) as client:
-                    r = await client.post(
-                        "http://localhost:8000/api/chat",
-                        json={"text": text, "source": "slack"},
-                    )
-                reply = r.json().get("reply", "")
-                if reply:
-                    await say(reply)
-            except Exception as e:
-                logger.error(f"Slack handler error: {e}")
-                await say(f"Error: {e}")
-
-        handler = AsyncSocketModeHandler(bolt, SLACK_APP_TOKEN)
-        print("[Slack] Socket Mode listener starting...")
-        await handler.start_async()
-    except Exception as e:
-        print(f"[Slack] Failed to start: {e}")
 
 
 @app.websocket("/ws")
@@ -1220,6 +1740,26 @@ async def websocket_endpoint(ws: WebSocket):
     connections.append(ws)
     await ws.send_json({"type": "state", "state": "listening"})
     await ws.send_json({"type": "prefs", "data": _load_prefs()})
+
+    # Re-hydrate dashboard with any agents that are already running
+    # (happens after a backend restart — tasks resume but frontend reconnects cold)
+    from tina.agent_state import get_all_active
+    for agent_key, info in get_all_active().items():
+        meta = _AGENT_META.get(agent_key, {"display": agent_key.capitalize(), "color": "#8B5CF6", "glow": "#A78BFA"})
+        await ws.send_json({
+            "type":    "agent_background_start",
+            "agent":   meta["display"],
+            "key":     agent_key,
+            "color":   meta.get("color", "#8B5CF6"),
+            "glow":    meta.get("glow",  "#A78BFA"),
+            "task":    info["task"][:120],
+        })
+        if info.get("current"):
+            await ws.send_json({
+                "type": "tool",
+                "name": info["current"],
+                "time": datetime.now().strftime("%H:%M:%S"),
+            })
     pending_mime = "audio/webm;codecs=opus"
     try:
         while True:
