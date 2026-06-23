@@ -589,6 +589,7 @@ export default function App() {
     codePreviewFiles, panels, dismissPanel,
     featuredPanels, dismissFeaturedPanel,
     morningActive, wakeWordActive,
+    kaosLive, stripeLive, notificationHistory,
     wakeActive, convActive,
     sendMessage, stopRecording,
     enterConversation, exitConversation,
@@ -938,6 +939,21 @@ export default function App() {
             ))}
           </Section>
 
+          {/* Notification / alert history */}
+          <Section label="ALERTS" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+              {notificationHistory.length === 0 ? (
+                <div style={{ padding: '6px 14px', fontSize: 10, opacity: 0.4, letterSpacing: 1 }}>NO ALERTS YET</div>
+              ) : notificationHistory.slice(0, 20).map(n => (
+                <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '4px 14px', borderBottom: `1px solid ${P}0c` }}>
+                  <span style={{ width: 4, height: 4, borderRadius: '50%', background: n.color, flexShrink: 0, boxShadow: `0 0 4px ${n.color}88` }} />
+                  <span style={{ fontSize: 10, color: n.color, opacity: 0.85, letterSpacing: 0.5, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.title}</span>
+                  <span style={{ fontSize: 9, opacity: 0.45, flexShrink: 0 }}>{relTime(n.ts)}</span>
+                </div>
+              ))}
+            </div>
+          </Section>
+
           <Section label="SESSION">
             {[
               { label: 'UPTIME',    value: uptime },
@@ -1046,6 +1062,49 @@ export default function App() {
 
         {/* ── RIGHT — Team ── */}
         <div style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${P}18`, overflow: 'hidden' }}>
+
+          {/* Live metrics tiles */}
+          {(kaosLive || stripeLive) && (
+            <Section label="LIVE" style={{ flexShrink: 0 }}>
+              <div style={{ padding: '4px 10px 6px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {kaosLive && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 3 }}>
+                    {[
+                      { label: 'WORKSPACES', val: kaosLive.users   ?? '—' },
+                      { label: 'TICKETS',    val: kaosLive.tickets  ?? '—', alert: kaosLive.tickets > 0 },
+                      { label: 'ACTIVE',     val: kaosLive.active_subs ?? '—', positive: true },
+                      { label: 'TRIAL',      val: kaosLive.trial_subs  ?? '—' },
+                    ].map(({ label, val, alert, positive }) => (
+                      <div key={label} style={{
+                        background: alert ? '#f59e0b11' : positive ? '#4ade8011' : `${P}0a`,
+                        border: `1px solid ${alert ? '#f59e0b33' : positive ? '#4ade8033' : P + '22'}`,
+                        borderRadius: 4, padding: '5px 4px', textAlign: 'center',
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 'bold', color: alert ? '#f59e0b' : positive ? '#4ade80' : PG, opacity: 0.9 }}>{val}</div>
+                        <div style={{ fontSize: 7, letterSpacing: 1, color: PG, opacity: 0.5, marginTop: 1 }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {stripeLive && (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
+                    {[
+                      { label: 'MRR',  val: `$${stripeLive.mrr != null ? stripeLive.mrr.toLocaleString('en-AU', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '—'}`, positive: true },
+                      { label: 'SUBS', val: stripeLive.active_subs ?? '—', positive: true },
+                    ].map(({ label, val, positive }) => (
+                      <div key={label} style={{
+                        background: '#4ade8011', border: '1px solid #4ade8033',
+                        borderRadius: 4, padding: '5px 4px', textAlign: 'center',
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 'bold', color: '#4ade80', opacity: 0.9 }}>{val}</div>
+                        <div style={{ fontSize: 7, letterSpacing: 1, color: PG, opacity: 0.5, marginTop: 1 }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
 
           <Section label="AGENTS" style={{ marginTop: 4, flexShrink: 0 }}>
             <div style={{ padding: '4px 10px 6px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5 }}>

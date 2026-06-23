@@ -37,8 +37,11 @@ export function useTina({ micDeviceId } = {}) {
   const [panels,            setPanels]            = useState([])
   const [featuredPanels,    setFeaturedPanels]    = useState([])
   const [morningActive,     setMorningActive]     = useState(false)
-  const [wakeWordActive,    setWakeWordActive]    = useState(false)
-  const [activityLogVisible, setActivityLogVisible] = useState(true)
+  const [wakeWordActive,      setWakeWordActive]      = useState(false)
+  const [kaosLive,            setKaosLive]            = useState(null)
+  const [stripeLive,          setStripeLive]          = useState(null)
+  const [notificationHistory, setNotificationHistory] = useState([])
+  const [activityLogVisible,  setActivityLogVisible]  = useState(true)
   const [agentStatuses, setAgentStatuses] = useState({
     tina:      { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
     research:  { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9',  label: 'Charlie' },
@@ -552,6 +555,16 @@ export function useTina({ micDeviceId } = {}) {
           break
         case 'featured_panel':
           setFeaturedPanels(prev => [...prev, { ...data }].slice(0, 6))
+          setNotificationHistory(prev => [{
+            id: data.id, title: data.title, color: data.color || '#8B5CF6',
+            ts: data.ts || Date.now(),
+          }, ...prev].slice(0, 30))
+          break
+        case 'kaos_live':
+          setKaosLive({ ...data })
+          break
+        case 'stripe_live':
+          setStripeLive({ ...data })
           break
         case 'morning_routine_start':
           setMorningActive(true)
@@ -616,7 +629,9 @@ export function useTina({ micDeviceId } = {}) {
     services, pipeline, turnCount, sessionStart, agentStatuses,
     diagRunning, diagResults, codePreviewFiles,
     panels, dismissPanel, featuredPanels, dismissFeaturedPanel,
-    morningActive, wakeWordActive, activityLogVisible,
+    morningActive, wakeWordActive,
+    kaosLive, stripeLive, notificationHistory,
+    activityLogVisible,
     wakeActive, convActive,
     sendMessage, startRecording, stopRecording,
     enterConversation, exitConversation, startWakeWord,

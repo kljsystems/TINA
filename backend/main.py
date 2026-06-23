@@ -743,6 +743,15 @@ async def _run_kaos_monitor():
             titles = "; ".join(e.get("title", "?") for e in fatal[:3])
             alerts.append(f"{len(fatal)} new KAOS error{'s' if len(fatal)>1 else ''} in Sentry: {titles}")
 
+        # Current platform totals for live tile
+        try:
+            total_users   = (db.table("workspaces").select("id", count="exact").execute().count or 0)
+            open_tickets  = (db.table("support_tickets").select("id", count="exact").eq("status", "open").execute().count or 0)
+            active_subs   = (db.table("workspace_subscriptions").select("workspace_id", count="exact").eq("status", "active").execute().count or 0)
+            trial_subs    = (db.table("workspace_subscriptions").select("workspace_id", count="exact").eq("status", "trialing").execute().count or 0)
+        except Exception:
+            total_users = open_tickets = active_subs = trial_subs = None
+
         # Save updated timestamps
         new_state = {
             "last_ticket":   (new_tickets[-1]["created_at"]  if new_tickets  else last_ticket_ts),
@@ -753,10 +762,11 @@ async def _run_kaos_monitor():
         with open(_KAOS_STATE_FILE, "w") as f:
             _json.dump(new_state, f)
 
-        return alerts
+        totals = {"users": total_users, "tickets": open_tickets, "active_subs": active_subs, "trial_subs": trial_subs}
+        return alerts, totals
 
     try:
-        alerts = await asyncio.to_thread(_check)
+        alerts, kaos_totals = await asyncio.to_thread(_check)
         import uuid as _uuid, time as _time
         for alert in alerts:
             lower = alert.lower()
@@ -781,6 +791,9 @@ async def _run_kaos_monitor():
             await broadcast({"type": "response", "text": alert})
             await _tts_stream(alert)
             await _slack_post(f":warning: *KAOS* — {alert}")
+        # Always broadcast live tile with current totals
+        import time as _time2
+        await broadcast({"type": "kaos_live", **kaos_totals, "ts": int(_time2.time() * 1000)})
     except Exception as e:
         print(f"[kaos-monitor] error: {e}")
 
@@ -884,6 +897,31 @@ async def _run_stripe_monitor():
             await _slack_post(f":credit_card: *STRIPE* — {content.replace(chr(10), ' — ')}")
         with open(_STATE_FILE, "w") as f:
             f.write(str(now_ts))
+        # Broadcast live MRR tile
+        try:
+            def _get_mrr():
+                import stripe as _stripe2
+                _stripe2.api_key = STRIPE_SECRET_KEY
+                subs   = _stripe2.Subscription.list(status="active", limit=100, expand=["data.items.data.price"])
+                mrr    = 0.0
+                count  = 0
+                for s in subs.auto_paging_iter():
+                    count += 1
+                    for item in (s.get("items") or {}).get("data", []):
+                        price = item.get("price") or {}
+                        amt   = price.get("unit_amount", 0) or 0
+                        qty   = item.get("quantity", 1) or 1
+                        interval = (price.get("recurring") or {}).get("interval", "month")
+                        if interval == "year":
+                            mrr += (amt * qty) / 12 / 100
+                        else:
+                            mrr += (amt * qty) / 100
+                return round(mrr, 2), count
+            mrr_val, sub_count = await asyncio.to_thread(_get_mrr)
+            import time as _time3
+            await broadcast({"type": "stripe_live", "mrr": mrr_val, "active_subs": sub_count, "ts": int(_time3.time() * 1000)})
+        except Exception as mrr_e:
+            print(f"[stripe-monitor] MRR tile error: {mrr_e}")
     except Exception as e:
         print(f"[stripe-monitor] error: {e}")
 
