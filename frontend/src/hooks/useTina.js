@@ -155,7 +155,7 @@ export function useTina({ micDeviceId } = {}) {
 
   const getAudioCtx = useCallback(() => {
     if (!audioCtxRef.current || audioCtxRef.current.state === 'closed')
-      audioCtxRef.current = new AudioContext({ sampleRate: 44100, latencyHint: 'playback' })
+      audioCtxRef.current = new AudioContext({ latencyHint: 'playback' })
     return audioCtxRef.current
   }, [])
 
@@ -280,7 +280,7 @@ export function useTina({ micDeviceId } = {}) {
       chunksRef.current = []
 
       // Use a dedicated AudioContext for VAD — keeps it isolated from TTS playback
-      const vadCtx     = new AudioContext({ sampleRate: 16000 })
+      const vadCtx     = new AudioContext()
       const source     = vadCtx.createMediaStreamSource(stream)
       const analyser   = vadCtx.createAnalyser()
       analyser.fftSize = 512
