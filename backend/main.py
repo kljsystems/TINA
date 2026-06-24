@@ -1891,6 +1891,67 @@ async def broadcast_panel(payload: dict):
     return {"ok": True}
 
 
+@app.post("/api/show-email-drafts")
+async def show_email_drafts():
+    """Extract pending drafts from latest triage report and broadcast to dashboard."""
+    import glob as _glob
+    from config import VAULT_DIR
+
+    tristan_dir = os.path.join(VAULT_DIR, "02-Tina-Memory", "Agents", "Tristan")
+    if not os.path.isdir(tristan_dir):
+        return {"error": "No triage reports found"}
+
+    triage_files = sorted(_glob.glob(os.path.join(tristan_dir, "*-triage.md")))
+    if not triage_files:
+        return {"error": "No triage reports found"}
+
+    content = open(triage_files[-1], encoding="utf-8").read()
+    source  = os.path.basename(triage_files[-1])
+
+    # Use Haiku to extract structured draft data from the markdown
+    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    resp = await client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=3000,
+        system=(
+            "Extract email drafts from this triage report. "
+            "Return ONLY a valid JSON array — no markdown fences, no explanation. "
+            'Each item must have: {"priority":"URGENT"|"NORMAL","account":"personal"|"business_gmail"|"business_outlook",'
+            '"from":"sender name and email","subject":"subject line","body":"the full drafted reply text"}. '
+            "Include ONLY NORMAL and URGENT emails. If none exist, return []."
+        ),
+        messages=[{"role": "user", "content": content}],
+    )
+    text = next((b.text for b in resp.content if hasattr(b, "text")), "[]").strip()
+    # Strip accidental markdown fences
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        drafts = _json.loads(text)
+    except Exception:
+        drafts = []
+
+    await broadcast({"type": "email_drafts", "drafts": drafts, "source": source})
+    return {"drafts": drafts, "source": source}
+
+
+@app.post("/api/email-send")
+async def send_email_draft(payload: dict):
+    """Send a drafted email reply directly via email_tool."""
+    from tools.email_tool import handle as _email_handle
+    account = payload.get("account", "personal")
+    to      = payload.get("to", "")
+    subject = payload.get("subject", "")
+    body    = payload.get("body", "")
+    if not to or not body:
+        return {"error": "Missing recipient or body"}
+    result = await asyncio.to_thread(
+        _email_handle, "email_send",
+        {"account": account, "to": to, "subject": subject, "body": body},
+    )
+    return {"result": result}
+
+
 @app.get("/api/pipeline")
 async def get_pipeline():
     """Return project pipeline state — inbox, proposed, and active projects."""

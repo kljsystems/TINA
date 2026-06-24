@@ -108,6 +108,17 @@ DEFINITIONS = [
         },
     },
     {
+        "name": "show_email_drafts",
+        "description": (
+            "Show Ky's pending email drafts from the last triage run as a review overlay on the dashboard. "
+            "Each draft shows the sender, subject line, and Tristan's drafted reply. "
+            "Ky can then send or skip each one. "
+            "Use when Ky says 'show me my drafts', 'what emails need replies', "
+            "'review my emails', 'show pending replies', or similar."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "take_screenshot",
         "description": (
             "Take a full screenshot of Ky's current screen and return it as an image you can see. "
@@ -306,6 +317,23 @@ def handle(name: str, inputs: dict) -> str:
             url = "file:///" + pathname2url(norm).lstrip("/")
         opened = webbrowser.open(url)
         return f"Opened in browser: {url}" if opened else f"Could not open browser for: {url}"
+
+    if name == "show_email_drafts":
+        import httpx as _httpx
+        try:
+            r = _httpx.post("http://localhost:8000/api/show-email-drafts", timeout=30)
+            data = r.json()
+            drafts = data.get("drafts", [])
+            if not drafts:
+                return "No pending email drafts found in the last triage report."
+            urgent = sum(1 for d in drafts if d.get("priority") == "URGENT")
+            normal = len(drafts) - urgent
+            parts = []
+            if urgent: parts.append(f"{urgent} urgent")
+            if normal: parts.append(f"{normal} normal")
+            return f"Showing {len(drafts)} draft{'s' if len(drafts) != 1 else ''} ({', '.join(parts)}) on your dashboard."
+        except Exception as e:
+            return f"Could not load drafts: {e}"
 
     if name == "take_screenshot":
         try:

@@ -315,6 +315,167 @@ const TOOL_MODULES = [
   { name: 'Weather',        color: '#7dd3fc', desc: 'OpenWeather API — current conditions, hourly and daily forecasts, wind, humidity, and UV index for your location.' },
 ]
 
+// ── Email drafts overlay ───────────────────────────────────────────────────────
+
+function DraftsOverlay({ data, onClose, onDismiss }) {
+  const drafts = data?.drafts || []
+  const [sent,    setSent]    = useState({})   // index → 'sending'|'sent'|'failed'
+  const [expanded, setExpanded] = useState(null)
+
+  const priorityColor = p => p === 'URGENT' ? '#ef4444' : '#60a5fa'
+
+  const accountLabel = a => ({
+    personal:         'Personal Gmail',
+    business_gmail:   'Business Gmail',
+    business_outlook: 'Outlook',
+  }[a] || a)
+
+  const handleSend = async (idx, draft) => {
+    setSent(s => ({ ...s, [idx]: 'sending' }))
+    try {
+      const r = await fetch('http://localhost:8000/api/email-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account: draft.account,
+          to:      draft.from,
+          subject: draft.subject,
+          body:    draft.body,
+        }),
+      })
+      const res = await r.json()
+      setSent(s => ({ ...s, [idx]: res.error ? 'failed' : 'sent' }))
+    } catch {
+      setSent(s => ({ ...s, [idx]: 'failed' }))
+    }
+  }
+
+  const allDone = drafts.length > 0 && drafts.every((_, i) => sent[i] === 'sent' || sent[i] === 'failed')
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(8,4,15,0.92)',
+      zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{
+        width: 640, maxHeight: '85vh', background: '#0d0820',
+        border: `1px solid ${P}55`, borderRadius: 8,
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: '11px 18px', borderBottom: `1px solid ${P}22`,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 11, letterSpacing: 3, color: PG }}>EMAIL DRAFTS</span>
+          <span style={{ fontSize: 9, color: PG + '55', letterSpacing: 1 }}>
+            {drafts.length} PENDING · {data?.source || ''}
+          </span>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', color: PG + '55',
+            cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0,
+          }}>✕</button>
+        </div>
+
+        {/* Draft list */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+          {drafts.length === 0 ? (
+            <div style={{ padding: '24px', textAlign: 'center', fontSize: 11, color: PG + '44', letterSpacing: 1 }}>
+              NO PENDING DRAFTS
+            </div>
+          ) : drafts.map((draft, idx) => {
+            const state  = sent[idx]
+            const isOpen = expanded === idx
+            const color  = priorityColor(draft.priority)
+            return (
+              <div key={idx} style={{
+                margin: '6px 12px', borderRadius: 5,
+                background: state === 'sent' ? '#4ade8008' : `${P}08`,
+                border: `1px solid ${state === 'sent' ? '#4ade8033' : state === 'failed' ? '#ef444433' : P + '22'}`,
+                opacity: state === 'sent' ? 0.6 : 1,
+                transition: 'all 0.2s',
+              }}>
+                {/* Draft header row */}
+                <div
+                  onClick={() => setExpanded(isOpen ? null : idx)}
+                  style={{
+                    padding: '10px 14px', cursor: 'pointer',
+                    display: 'grid', gridTemplateColumns: 'auto 1fr auto',
+                    gap: 10, alignItems: 'center',
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{
+                      padding: '2px 7px', fontSize: 8, letterSpacing: 1, borderRadius: 3,
+                      background: color + '22', color, border: `1px solid ${color}55`,
+                    }}>{draft.priority}</span>
+                    <span style={{ fontSize: 8, color: PG + '44', letterSpacing: 1 }}>{accountLabel(draft.account)}</span>
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: PG, opacity: 0.9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {draft.subject}
+                    </div>
+                    <div style={{ fontSize: 10, color: PG, opacity: 0.5, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {draft.from}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                    {state === 'sent'    && <span style={{ fontSize: 9, color: '#4ade80', letterSpacing: 1 }}>SENT ✓</span>}
+                    {state === 'failed'  && <span style={{ fontSize: 9, color: '#ef4444', letterSpacing: 1 }}>FAILED</span>}
+                    {state === 'sending' && <span style={{ fontSize: 9, color: PG + '66', letterSpacing: 1 }}>SENDING…</span>}
+                    {!state && (
+                      <button
+                        onClick={e => { e.stopPropagation(); handleSend(idx, draft) }}
+                        style={{
+                          padding: '3px 12px', fontSize: 9, letterSpacing: 2,
+                          background: '#4ade8022', border: '1px solid #4ade8055',
+                          color: '#4ade80', borderRadius: 3, cursor: 'pointer',
+                          fontFamily: "'Courier New',monospace",
+                        }}
+                      >SEND</button>
+                    )}
+                    <span style={{ fontSize: 10, color: PG + '33' }}>{isOpen ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {/* Expanded body */}
+                {isOpen && (
+                  <div style={{ padding: '0 14px 12px' }}>
+                    <div style={{ fontSize: 9, color: PG + '44', letterSpacing: 1, marginBottom: 6 }}>DRAFT REPLY</div>
+                    <div style={{
+                      background: '#1a0f35', border: `1px solid ${P}22`,
+                      borderRadius: 4, padding: '10px 12px',
+                      fontSize: 12, color: PG, lineHeight: 1.7,
+                      whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto',
+                      opacity: 0.85,
+                    }}>{draft.body}</div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: '10px 18px', borderTop: `1px solid ${P}22`,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 9, color: PG + '44', letterSpacing: 1 }}>
+            {Object.values(sent).filter(s => s === 'sent').length} SENT · {Object.values(sent).filter(s => s === 'failed').length} FAILED
+          </span>
+          <button onClick={onClose} style={{
+            padding: '4px 16px', fontSize: 9, letterSpacing: 2,
+            background: `${P}22`, border: `1px solid ${P}55`,
+            color: PG, borderRadius: 3, cursor: 'pointer',
+            fontFamily: "'Courier New',monospace",
+          }}>DONE</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── System info overlay ────────────────────────────────────────────────────────
 
 function SystemInfoOverlay({ onClose, services, connected }) {
@@ -590,6 +751,7 @@ export default function App() {
     featuredPanels, dismissFeaturedPanel,
     morningActive, wakeWordActive,
     kaosLive, stripeLive, notificationHistory,
+    emailDrafts, setEmailDrafts,
     wakeActive, convActive,
     sendMessage, stopRecording,
     enterConversation, exitConversation,
@@ -773,6 +935,13 @@ export default function App() {
       )}
       {showSystemInfo && (
         <SystemInfoOverlay onClose={() => setShowSystemInfo(false)} services={services} connected={connected} />
+      )}
+      {emailDrafts && (
+        <DraftsOverlay
+          data={emailDrafts}
+          onClose={() => setEmailDrafts(null)}
+          onDismiss={() => setEmailDrafts(null)}
+        />
       )}
 
       {/* Featured data popups */}

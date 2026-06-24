@@ -40,6 +40,7 @@ export function useTina({ micDeviceId } = {}) {
   const [wakeWordActive,      setWakeWordActive]      = useState(false)
   const [kaosLive,            setKaosLive]            = useState(null)
   const [stripeLive,          setStripeLive]          = useState(null)
+  const [emailDrafts,         setEmailDrafts]         = useState(null)
   const [notificationHistory, setNotificationHistory] = useState(() => {
     try {
       const stored = localStorage.getItem('tina_alerts')
@@ -578,6 +579,9 @@ export function useTina({ micDeviceId } = {}) {
         case 'stripe_live':
           setStripeLive({ ...data })
           break
+        case 'email_drafts':
+          setEmailDrafts(data.drafts?.length ? data : null)
+          break
         case 'morning_routine_start':
           setMorningActive(true)
           break
@@ -643,6 +647,7 @@ export function useTina({ micDeviceId } = {}) {
     panels, dismissPanel, featuredPanels, dismissFeaturedPanel,
     morningActive, wakeWordActive,
     kaosLive, stripeLive, notificationHistory,
+    emailDrafts, setEmailDrafts,
     activityLogVisible,
     wakeActive, convActive,
     sendMessage, startRecording, stopRecording,
