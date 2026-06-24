@@ -70,6 +70,7 @@ export function useTina({ micDeviceId } = {}) {
   const recognitionRef        = useRef(null)
   const vadRef                = useRef(null)
   const noSpeechRef           = useRef(null)
+  const backendWakeWordRef    = useRef(false)  // true when faster-whisper is running
 
   const TOOL_LABELS = {
     vault_search: 'VAULT SEARCH', vault_read: 'VAULT READ',
@@ -369,6 +370,16 @@ export function useTina({ micDeviceId } = {}) {
     if (wakeActiveRef.current) return
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
+    // If backend faster-whisper wake word is running, don't open the browser mic.
+    // The continuous Web Speech API holds the mic open and forces system-wide audio
+    // resampling that makes all audio on the machine sound robotic.
+    // Just mark wake active and wait for the backend's wake_word_detected WS event.
+    if (backendWakeWordRef.current) {
+      wakeActiveRef.current = true
+      setWakeActive(true)
+      return
+    }
+
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     if (!SR) return  // Firefox — fall back to manual button
 
@@ -614,6 +625,7 @@ export function useTina({ micDeviceId } = {}) {
           break
         case 'wake_word_ready':
           setWakeWordActive(true)
+          backendWakeWordRef.current = true
           break
         case 'wake_word_detected':
           if (!convActiveRef.current) {
