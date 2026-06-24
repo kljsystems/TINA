@@ -186,6 +186,13 @@ export function useTina({ micDeviceId } = {}) {
       const startAt = Math.max(ctx.currentTime, nextStartTimeRef.current)
       src.start(startAt)
       nextStartTimeRef.current = startAt + decoded.duration
+      // Suspend context after playback ends — releases WASAPI session so the
+      // audio driver doesn't apply global DSP while TINA is idle
+      src.onended = () => {
+        if (Math.abs((audioCtxRef.current?.currentTime ?? 0) - nextStartTimeRef.current) < 0.05) {
+          audioCtxRef.current?.suspend().catch(() => {})
+        }
+      }
     } catch (e) {
       console.error('Audio chunk error:', e)
     }
@@ -640,6 +647,21 @@ export function useTina({ micDeviceId } = {}) {
         case 'wake_word_ready':
           setWakeWordActive(true)
           backendWakeWordRef.current = true
+          if (recognitionRef.current) {
+            try { recognitionRef.current.abort() } catch {}
+            recognitionRef.current = null
+          }
+          break
+        case 'wake_word_disabled':
+          // Wake word is off server-side — kill Web Speech API fallback too, use spacebar only
+          backendWakeWordRef.current = true  // prevents startWakeWord from launching Speech API
+          if (recognitionRef.current) {
+            try { recognitionRef.current.abort() } catch {}
+            recognitionRef.current = null
+          }
+          wakeActiveRef.current = false
+          setWakeActive(false)
+          setWakeWordActive(false)
           break
         case 'wake_word_detected':
           if (!convActiveRef.current) {

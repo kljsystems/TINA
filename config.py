@@ -87,6 +87,12 @@ ELEVENLABS_MODEL   = "eleven_flash_v2_5"
 ELEVENLABS_FORMAT  = "pcm_22050"
 DEFAULT_VOICE_ID   = "XrExE9yKIg1WjnnlVkGX"  # Matilda (Australian female, warm)
 
+# Wake word detection (faster-whisper + sounddevice).
+# Disabled by default — holding the mic open continuously triggers Realtek/
+# Conexant AEC processing system-wide, making Spotify/YouTube sound robotic.
+# Set WAKE_WORD_ENABLED=true in .env only if your audio hardware handles it cleanly.
+WAKE_WORD_ENABLED  = os.getenv("WAKE_WORD_ENABLED", "false").lower() == "true"
+
 # ── Base directory (change this in .env when moving to dedicated PC) ─────────
 KLJ_BASE  = os.getenv("KLJ_BASE", r"C:\Users\nrlocal\Desktop\KLJ")
 

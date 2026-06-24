@@ -27,6 +27,7 @@ from config import (
     DEFAULT_VOICE_ID, ELEVENLABS_MODEL, ELEVENLABS_FORMAT,
     VAULT_DIR,
     SLACK_TINA_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_CHANNEL, SLACK_KY_USER_ID,
+    WAKE_WORD_ENABLED,
 )
 from tina.agent import TinaAgent
 
@@ -1130,20 +1131,29 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_schedule_pattern_scan())
     asyncio.create_task(_start_slack_listener())
 
-    # Wake-word detector — runs in background thread, fires wake_word_detected WS event
-    try:
-        from tina.wake_word import start as _ww_start
-        _ww_loop = asyncio.get_running_loop()
+    # Wake-word detector — disabled by default; set WAKE_WORD_ENABLED=true in .env to enable.
+    # Holding a WASAPI capture session open continuously triggers audio driver AEC globally,
+    # making Spotify/YouTube sound robotic. Only enable if your hardware handles it cleanly.
+    if WAKE_WORD_ENABLED:
+        try:
+            from tina.wake_word import start as _ww_start
+            _ww_loop = asyncio.get_running_loop()
 
-        async def _on_wake_word(status: str, text: str):
-            if status == "triggered":
-                await broadcast({"type": "wake_word_detected"})
-            elif status == "ready":
-                await broadcast({"type": "wake_word_ready"})
+            async def _on_wake_word(status: str, text: str):
+                if status == "triggered":
+                    await broadcast({"type": "wake_word_detected"})
+                elif status == "ready":
+                    await broadcast({"type": "wake_word_ready"})
 
-        _ww_start(_ww_loop, _on_wake_word)
-    except Exception as e:
-        print(f"[wake-word] could not start: {e}")
+            _ww_start(_ww_loop, _on_wake_word)
+        except Exception as e:
+            print(f"[wake-word] could not start: {e}")
+    else:
+        print("[wake-word] disabled (WAKE_WORD_ENABLED=false) — use spacebar to talk")
+        # Tell frontend not to start Web Speech API either
+        asyncio.get_running_loop().call_later(
+            2.0, lambda: asyncio.ensure_future(broadcast({"type": "wake_word_disabled"}))
+        )
 
     yield
 
