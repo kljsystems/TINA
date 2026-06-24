@@ -4,8 +4,8 @@ const WS_URL       = 'ws://localhost:8000/ws'
 const RECONNECT_MS = 3000
 const WAKE_WORDS   = ['hey tina', 'tina', 'ok tina']
 const SILENCE_RMS    = 10    // time-domain RMS below this = silence (0–128 range)
-const SILENCE_MS     = 7000  // 7s continuous silence after speech → stop recording
-const MIN_SPEECH_MS  = 1200  // must have spoken for at least 1.2s before cutoff can trigger
+const SILENCE_MS     = 2000  // 2s continuous silence after speech → stop recording
+const MIN_SPEECH_MS  = 400   // must have spoken for at least 400ms before cutoff can trigger
 const NO_SPEECH_MS   = 9000  // 9s no speech at all → exit conversation mode
 
 function getMimeType() {
@@ -354,32 +354,32 @@ export function useTina({ micDeviceId } = {}) {
       if (!wakeActiveRef.current) return
 
       const recognition = new SR()
-      recognition.continuous      = false   // fresh instance each cycle — more reliable than reusing
-      recognition.interimResults  = false   // final results only — much more accurate
+      recognition.continuous      = true    // keep mic open — prevents flickering icon
+      recognition.interimResults  = true    // interim results for faster wake word detection
       recognition.lang            = 'en-AU' // Australian English to match Ky's accent
-      recognition.maxAlternatives = 5       // check multiple recognition candidates
+      recognition.maxAlternatives = 3
 
       recognitionRef.current = recognition
 
       recognition.onresult = (e) => {
-        for (let i = 0; i < e.results.length; i++) {
-          for (let j = 0; j < e.results[i].length; j++) {
-            const t = e.results[i][j].transcript.toLowerCase().trim()
-            // Match "tina" or common mishearings (Gina, Dina, Tena, Teena)
-            if (/\b(tina|teena|tena|gina|dina|kina)\b/.test(t)) {
-              recognitionRef.current = null
-              wakeActiveRef.current  = false
-              setWakeActive(false)
-              setTimeout(() => cb.current.enterConversation(), 400)
-              return
-            }
+        if (!wakeActiveRef.current) return
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t = e.results[i][0].transcript.toLowerCase().trim()
+          // Match "tina" or common mishearings (Gina, Dina, Tena, Teena)
+          if (/\b(tina|teena|tena|gina|dina|kina)\b/.test(t)) {
+            wakeActiveRef.current  = false
+            setWakeActive(false)
+            try { recognition.stop() } catch {}
+            recognitionRef.current = null
+            setTimeout(() => cb.current.enterConversation(), 400)
+            return
           }
         }
       }
 
-      // Restart with a fresh instance on end — avoids stale-state bugs in Chrome
+      // Chrome sometimes stops continuous recognition after ~60s — restart it
       recognition.onend = () => {
-        if (wakeActiveRef.current) setTimeout(tryStart, 150)
+        if (wakeActiveRef.current) setTimeout(tryStart, 300)
       }
 
       recognition.onerror = (e) => {
@@ -388,7 +388,6 @@ export function useTina({ micDeviceId } = {}) {
           setWakeActive(false)
           return
         }
-        // network/aborted/no-speech errors — just restart
         if (wakeActiveRef.current) setTimeout(tryStart, 500)
       }
 
