@@ -832,28 +832,37 @@ async def _run_stripe_monitor():
             pass
 
     def _check():
-        import stripe as _stripe
-        _stripe.api_key = STRIPE_SECRET_KEY
+        """Check for new Stripe events using stripe_tool's HTTP client — no SDK needed."""
+        import httpx as _httpx
         alerts = []
+        if not STRIPE_SECRET_KEY:
+            return alerts
         try:
-            events = _stripe.Event.list(
-                created={"gt": last_ts},
-                types=[
-                    "charge.failed",
-                    "invoice.payment_failed",
-                    "customer.subscription.created",
-                    "customer.subscription.deleted",
-                    "charge.dispute.created",
-                ],
-                limit=25,
+            resp = _httpx.get(
+                "https://api.stripe.com/v1/events",
+                headers={"Authorization": f"Bearer {STRIPE_SECRET_KEY}"},
+                params={
+                    "created[gt]": last_ts,
+                    "types[]": [
+                        "charge.failed",
+                        "invoice.payment_failed",
+                        "customer.subscription.created",
+                        "customer.subscription.deleted",
+                        "charge.dispute.created",
+                    ],
+                    "limit": 25,
+                },
+                timeout=20,
             )
+            resp.raise_for_status()
+            events = resp.json().get("data", [])
         except Exception as e:
             print(f"[stripe-monitor] API error: {e}")
             return alerts
 
-        for event in events.auto_paging_iter():
+        for event in events:
             obj   = event.get("data", {}).get("object", {})
-            etype = event["type"]
+            etype = event.get("type", "")
 
             if etype == "charge.failed":
                 amount = obj.get("amount", 0) / 100
@@ -865,16 +874,16 @@ async def _run_stripe_monitor():
                 alerts.append(("PAYMENT FAILED", f"Invoice ${amount:.2f} payment failed", "#ef4444"))
 
             elif etype == "customer.subscription.created":
-                items   = (obj.get("items") or {}).get("data") or [{}]
-                price   = (items[0].get("price") or {})
-                plan    = price.get("nickname") or price.get("id") or "plan"
-                amount  = price.get("unit_amount", 0) / 100
-                alerts.append(("NEW SUBSCRIBER", f"New subscription: {plan}\n${amount:.2f}/mo", "#4ade80"))
-
-            elif etype == "customer.subscription.deleted":
                 items  = (obj.get("items") or {}).get("data") or [{}]
                 price  = (items[0].get("price") or {})
                 plan   = price.get("nickname") or price.get("id") or "plan"
+                amount = price.get("unit_amount", 0) / 100
+                alerts.append(("NEW SUBSCRIBER", f"New subscription: {plan}\n${amount:.2f}/mo", "#4ade80"))
+
+            elif etype == "customer.subscription.deleted":
+                items = (obj.get("items") or {}).get("data") or [{}]
+                price = (items[0].get("price") or {})
+                plan  = price.get("nickname") or price.get("id") or "plan"
                 alerts.append(("CANCELLATION", f"Subscription cancelled: {plan}", "#f59e0b"))
 
             elif etype == "charge.dispute.created":
@@ -882,6 +891,36 @@ async def _run_stripe_monitor():
                 alerts.append(("DISPUTE", f"Chargeback dispute opened\n${amount:.2f}", "#ef4444"))
 
         return alerts
+
+    def _get_mrr():
+        """Fetch active subscription MRR via direct HTTP — no SDK needed."""
+        import httpx as _httpx
+        if not STRIPE_SECRET_KEY:
+            return 0.0, 0
+        mrr, count, has_more, starting_after = 0.0, 0, True, None
+        while has_more:
+            params = {"status": "active", "limit": 100, "expand[]": "data.items.data.price"}
+            if starting_after:
+                params["starting_after"] = starting_after
+            resp = _httpx.get(
+                "https://api.stripe.com/v1/subscriptions",
+                headers={"Authorization": f"Bearer {STRIPE_SECRET_KEY}"},
+                params=params, timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for s in data.get("data", []):
+                count += 1
+                for item in (s.get("items") or {}).get("data", []):
+                    price    = item.get("price") or {}
+                    amt      = price.get("unit_amount", 0) or 0
+                    qty      = item.get("quantity", 1) or 1
+                    interval = (price.get("recurring") or {}).get("interval", "month")
+                    mrr += (amt * qty) / 12 / 100 if interval == "year" else (amt * qty) / 100
+            has_more = data.get("has_more", False)
+            if has_more and data.get("data"):
+                starting_after = data["data"][-1]["id"]
+        return round(mrr, 2), count
 
     try:
         alerts = await asyncio.to_thread(_check)
@@ -900,26 +939,7 @@ async def _run_stripe_monitor():
             await _slack_post(f":credit_card: *STRIPE* — {content.replace(chr(10), ' — ')}")
         with open(_STATE_FILE, "w") as f:
             f.write(str(now_ts))
-        # Broadcast live MRR tile
         try:
-            def _get_mrr():
-                import stripe as _stripe2
-                _stripe2.api_key = STRIPE_SECRET_KEY
-                subs   = _stripe2.Subscription.list(status="active", limit=100, expand=["data.items.data.price"])
-                mrr    = 0.0
-                count  = 0
-                for s in subs.auto_paging_iter():
-                    count += 1
-                    for item in (s.get("items") or {}).get("data", []):
-                        price = item.get("price") or {}
-                        amt   = price.get("unit_amount", 0) or 0
-                        qty   = item.get("quantity", 1) or 1
-                        interval = (price.get("recurring") or {}).get("interval", "month")
-                        if interval == "year":
-                            mrr += (amt * qty) / 12 / 100
-                        else:
-                            mrr += (amt * qty) / 100
-                return round(mrr, 2), count
             mrr_val, sub_count = await asyncio.to_thread(_get_mrr)
             import time as _time3
             await broadcast({"type": "stripe_live", "mrr": mrr_val, "active_subs": sub_count, "ts": int(_time3.time() * 1000)})

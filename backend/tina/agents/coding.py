@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 from .base import BaseAgent
 from tools import github_tool, vault, filesystem_tool
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
-from tools import search, docs_tool, system_tool, test_tool, git_tool, screenshot_tool, lint_tool
+from tools import search, docs_tool, system_tool, test_tool, git_tool, lint_tool
 
 
 class CodingAgent(BaseAgent):
@@ -122,4 +122,4 @@ TOOLS
 - request_agent: delegate a sub-task to another specialist"""
 
     allow_delegation = True
-    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool, system_tool, test_tool, git_tool, screenshot_tool, lint_tool]
+    tool_modules     = [github_tool, vault, filesystem_tool, search, docs_tool, system_tool, test_tool, git_tool, lint_tool]

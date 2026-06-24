@@ -2,7 +2,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from .base import BaseAgent
-from tools import filesystem_tool, search, git_tool, test_tool, lint_tool, screenshot_tool, vault, system_tool
+from tools import filesystem_tool, search, git_tool, test_tool, lint_tool, vault, system_tool
 
 try:
     from config import SITES_DIR
@@ -129,4 +129,4 @@ TOOLS
 - run_tests / lint tools: check code style and catch errors.
 - vault_search / vault_read: for brand guidelines or design system references ONLY. Never use to check if files were previously built — vault notes about past builds are unreliable."""
 
-    tool_modules     = [filesystem_tool, search, git_tool, test_tool, lint_tool, screenshot_tool, vault, system_tool]
+    tool_modules     = [filesystem_tool, search, git_tool, test_tool, lint_tool, vault, system_tool]
