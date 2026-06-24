@@ -205,6 +205,70 @@ DEFINITIONS = [
         },
     },
     {
+        "name": "email_label",
+        "description": (
+            "Add or remove labels/categories on one or more emails for organisation. "
+            "Gmail: creates the label automatically if it doesn't exist. "
+            "Outlook: applies as named categories. "
+            "Use during triage to tag URGENT emails 'Priority', newsletters 'Newsletter', "
+            "invoices 'Finance', etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                },
+                "email_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Email IDs to label (from email_list or email_search).",
+                },
+                "add": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Label/category names to apply, e.g. ['Priority', 'KAOS'].",
+                },
+                "remove": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Label/category names to remove.",
+                },
+            },
+            "required": ["account", "email_ids"],
+        },
+    },
+    {
+        "name": "email_move",
+        "description": (
+            "Move one or more emails to a named folder. "
+            "Gmail: creates the label/folder automatically if it doesn't exist, then archives from inbox. "
+            "Outlook: creates the folder if it doesn't exist, then moves. "
+            "Use 'Archive' to archive without a folder, 'Trash' to delete. "
+            "Good folder names: 'Newsletters', 'Receipts', 'Finance', 'KAOS', 'Clients'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "type": "string",
+                    "enum": ["personal", "business_gmail", "business_outlook"],
+                },
+                "email_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Email IDs to move.",
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Destination folder name. Use 'Archive' to archive, 'Trash' to delete.",
+                },
+            },
+            "required": ["account", "email_ids", "folder"],
+        },
+    },
+    {
         "name": "email_accounts",
         "description": "List the email accounts Tristan can send from, with their addresses and routing rules.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
@@ -661,6 +725,113 @@ def _outlook_mark_read(sender: str, email_ids: list) -> str:
     return f"Marked {len(email_ids)} email(s) as read."
 
 
+# ── Label / Move — Gmail ───────────────────────────────────────────────────────
+
+def _gmail_get_or_create_label(svc, label_name: str) -> str:
+    """Return label ID, creating it if it doesn't exist."""
+    result = svc.users().labels().list(userId="me").execute()
+    for lbl in result.get("labels", []):
+        if lbl["name"].lower() == label_name.lower():
+            return lbl["id"]
+    created = svc.users().labels().create(
+        userId="me",
+        body={"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"},
+    ).execute()
+    return created["id"]
+
+
+def _gmail_label(account: str, email_ids: list, add: list, remove: list) -> str:
+    svc = _gmail_service(account)
+    all_labels = {l["name"].lower(): l["id"] for l in svc.users().labels().list(userId="me").execute().get("labels", [])}
+    add_ids    = [_gmail_get_or_create_label(svc, l) for l in add]
+    remove_ids = [all_labels[l.lower()] for l in remove if l.lower() in all_labels]
+    for eid in email_ids:
+        svc.users().messages().modify(
+            userId="me", id=eid,
+            body={"addLabelIds": add_ids, "removeLabelIds": remove_ids},
+        ).execute()
+    return f"Applied labels {add} to {len(email_ids)} email(s)." + (f" Removed {remove}." if remove else "")
+
+
+def _gmail_move(account: str, email_ids: list, folder: str) -> str:
+    svc = _gmail_service(account)
+    fl  = folder.lower()
+    if fl in ("archive",):
+        for eid in email_ids:
+            svc.users().messages().modify(userId="me", id=eid, body={"removeLabelIds": ["INBOX"]}).execute()
+        return f"Archived {len(email_ids)} email(s)."
+    if fl in ("trash", "bin", "delete"):
+        for eid in email_ids:
+            svc.users().messages().trash(userId="me", id=eid).execute()
+        return f"Trashed {len(email_ids)} email(s)."
+    if fl == "inbox":
+        for eid in email_ids:
+            svc.users().messages().modify(userId="me", id=eid, body={"addLabelIds": ["INBOX"]}).execute()
+        return f"Moved {len(email_ids)} email(s) back to inbox."
+    # User folder — create label and archive from inbox
+    label_id = _gmail_get_or_create_label(svc, folder)
+    for eid in email_ids:
+        svc.users().messages().modify(
+            userId="me", id=eid,
+            body={"addLabelIds": [label_id], "removeLabelIds": ["INBOX"]},
+        ).execute()
+    return f"Moved {len(email_ids)} email(s) to '{folder}'."
+
+
+# ── Label / Move — Outlook ────────────────────────────────────────────────────
+
+def _graph_post(path: str, body: dict) -> dict:
+    import requests
+    token = _graph_token()
+    resp = requests.post(
+        f"https://graph.microsoft.com/v1.0{path}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body, timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
+
+
+def _outlook_get_or_create_folder(sender: str, folder_name: str) -> str:
+    """Return folder ID (well-known name or by display name), creating if needed."""
+    well_known = {
+        "inbox": "inbox", "sent": "sentitems", "drafts": "drafts",
+        "archive": "archive", "trash": "deleteditems", "bin": "deleteditems",
+        "delete": "deleteditems", "junk": "junkemail",
+    }
+    if folder_name.lower() in well_known:
+        return well_known[folder_name.lower()]
+    data = _graph_get(f"/users/{sender}/mailFolders", {"$filter": f"displayName eq '{folder_name}'", "$top": 1})
+    folders = data.get("value", [])
+    if folders:
+        return folders[0]["id"]
+    result = _graph_post(f"/users/{sender}/mailFolders", {"displayName": folder_name})
+    return result["id"]
+
+
+def _outlook_label(sender: str, email_ids: list, add: list, remove: list) -> str:
+    for eid in email_ids:
+        data    = _graph_get(f"/users/{sender}/messages/{eid}", {"$select": "categories"})
+        current = set(data.get("categories", []))
+        current.update(add)
+        for rl in remove:
+            current.discard(rl)
+        _graph_patch(f"/users/{sender}/messages/{eid}", {"categories": list(current)})
+    return f"Applied categories {add} to {len(email_ids)} email(s)." + (f" Removed {remove}." if remove else "")
+
+
+def _outlook_move(sender: str, email_ids: list, folder: str) -> str:
+    folder_id = _outlook_get_or_create_folder(sender, folder)
+    moved = 0
+    for eid in email_ids:
+        try:
+            _graph_post(f"/users/{sender}/messages/{eid}/move", {"destinationId": folder_id})
+            moved += 1
+        except Exception:
+            pass
+    return f"Moved {moved}/{len(email_ids)} email(s) to '{folder}'."
+
+
 # ── Handler ───────────────────────────────────────────────────────────────────
 
 def handle(name: str, inputs: dict) -> str:
@@ -734,6 +905,41 @@ def handle(name: str, inputs: dict) -> str:
             return _outlook_mark_read(addr, email_ids)
         except Exception as e:
             return f"email_mark_read error ({account}): {e}"
+
+    if name == "email_label":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'."
+        provider, addr = _ACCOUNTS[account]
+        email_ids = inputs.get("email_ids", [])
+        add    = inputs.get("add", [])
+        remove = inputs.get("remove", [])
+        if not email_ids:
+            return "No email IDs provided."
+        try:
+            if provider == "gmail":
+                return _gmail_label(account, email_ids, add, remove)
+            return _outlook_label(addr, email_ids, add, remove)
+        except Exception as e:
+            return f"email_label error ({account}): {e}"
+
+    if name == "email_move":
+        account = inputs.get("account", "")
+        if account not in _ACCOUNTS:
+            return f"Unknown account '{account}'."
+        provider, addr = _ACCOUNTS[account]
+        email_ids = inputs.get("email_ids", [])
+        folder    = inputs.get("folder", "").strip()
+        if not email_ids:
+            return "No email IDs provided."
+        if not folder:
+            return "No destination folder specified."
+        try:
+            if provider == "gmail":
+                return _gmail_move(account, email_ids, folder)
+            return _outlook_move(addr, email_ids, folder)
+        except Exception as e:
+            return f"email_move error ({account}): {e}"
 
     if name == "email_send":
         account = inputs.get("account", "")
