@@ -382,8 +382,30 @@ class BaseAgent:
 
                 # If agent finished tool calls but returned no text, ask once for a concrete report
                 if not reply.strip() and tool_call_count > 0 and not _asked_for_summary:
+                    # Strip any tool_use blocks before adding to history — they can appear
+                    # when tool_choice:any forces a tool call but end_turn fires anyway,
+                    # and an orphaned tool_use without a following tool_result causes a 400.
+                    safe_content = [
+                        b for b in response.content
+                        if getattr(b, "type", None) != "tool_use"
+                    ] or [{"type": "text", "text": ""}]
+
+                    # If we're below the minimum required tool calls, push back rather
+                    # than asking for a summary — the agent hasn't done the work yet.
+                    if self.force_tool_first and tool_call_count < self.force_tool_min_calls:
+                        history.append({"role": "assistant", "content": safe_content})
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                f"You've only made {tool_call_count} tool call(s). "
+                                "The task is not finished. Continue making tool calls now — "
+                                "no text responses until all the work is done."
+                            ),
+                        })
+                        continue
+
                     _asked_for_summary = True
-                    history.append({"role": "assistant", "content": response.content})
+                    history.append({"role": "assistant", "content": safe_content})
                     history.append({
                         "role": "user",
                         "content": (
