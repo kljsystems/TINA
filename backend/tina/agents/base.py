@@ -388,7 +388,7 @@ class BaseAgent:
                     safe_content = [
                         b for b in response.content
                         if getattr(b, "type", None) != "tool_use"
-                    ] or [{"type": "text", "text": ""}]
+                    ] or [{"type": "text", "text": "(no text output)"}]
 
                     # If we're below the minimum required tool calls, push back rather
                     # than asking for a summary — the agent hasn't done the work yet.
