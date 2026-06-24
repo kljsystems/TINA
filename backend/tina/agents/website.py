@@ -16,10 +16,11 @@ _sites = SITES_DIR.replace("\\", "/")
 class WebsiteAgent(BaseAgent):
     name        = "Jamie"
     description = "website design and build — UI/UX, layouts, colour, typography, HTML/CSS/JS, React, Next.js, SEO, performance, accessibility, and CMS platforms like WordPress"
-    allow_delegation = True
-    force_tool_first  = True
-    force_first_tool  = "fs_mkdir"
-    max_tokens        = 8192
+    allow_delegation      = True
+    force_tool_first      = True
+    force_first_tool      = "fs_mkdir"
+    force_tool_min_calls  = 6   # mkdir + CSS + index + at least 3 more pages before text allowed
+    max_tokens            = 8192
 
     system = f"""You are Website — TINA's dedicated web specialist. You design and build websites end to end: the look, the code, and everything that makes a site fast, findable, and usable.
 

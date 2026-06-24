@@ -211,9 +211,10 @@ class BaseAgent:
     system:           str  = ""
     tool_modules:     list = []
     allow_delegation: bool = True  # opt-out for sensitive agents; new agents get it free
-    force_tool_first: bool = False # set True to require a tool call before any text output
-    force_first_tool: str  = "any" # "any" or a specific tool name to force on the first call
-    max_tokens:       int  = 4096 # override per agent for tasks that need longer responses
+    force_tool_first:     bool = False # set True to require a tool call before any text output
+    force_first_tool:     str  = "any" # "any" or a specific tool name to force on the first call
+    force_tool_min_calls: int  = 1     # hold tool_choice:any until this many calls are made
+    max_tokens:           int  = 4096  # override per agent for tasks that need longer responses
 
     def __init__(self):
         self.client    = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -299,15 +300,19 @@ class BaseAgent:
             )
             if self._definitions:
                 kwargs["tools"] = self._definitions
-                # Force the model to call a tool on the first response when
-                # force_tool_first is set — prevents bailing with a text summary
-                # before doing any actual work.
-                if self.force_tool_first and tool_call_count == 0:
-                    ftf = self.force_first_tool
-                    kwargs["tool_choice"] = (
-                        {"type": "any"} if ftf == "any"
-                        else {"type": "tool", "name": ftf}
-                    )
+                # Force tool calls until force_tool_min_calls is reached.
+                # On call 0: optionally force a specific tool (e.g. fs_mkdir).
+                # After that: keep tool_choice:any so the agent can't bail with
+                # planning text before it's done enough actual work.
+                if self.force_tool_first and tool_call_count < self.force_tool_min_calls:
+                    if tool_call_count == 0:
+                        ftf = self.force_first_tool
+                        kwargs["tool_choice"] = (
+                            {"type": "any"} if ftf == "any"
+                            else {"type": "tool", "name": ftf}
+                        )
+                    else:
+                        kwargs["tool_choice"] = {"type": "any"}
 
             response = await self.client.messages.create(**kwargs)
 
