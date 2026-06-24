@@ -450,7 +450,7 @@ async def _run_email_triage():
     task = (
         "AUTONOMOUS TRIAGE MODE — you are running on a scheduled basis without a human in the loop.\n\n"
         "For each account (personal, business_outlook):\n"
-        "1. email_list to get unread emails (limit 30)\n"
+        "1. email_list to get unread emails (limit 50)\n"
         "2. For each unread email, classify it into one of:\n"
         "   - IGNORE: newsletters, automated notifications, marketing, receipts with no action needed\n"
         "   - LOW: FYI emails, cc'd threads, things Ky should know but don't need a reply\n"
