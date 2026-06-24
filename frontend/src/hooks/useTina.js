@@ -3,10 +3,11 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 const WS_URL       = 'ws://localhost:8000/ws'
 const RECONNECT_MS = 3000
 const WAKE_WORDS   = ['hey tina', 'tina', 'ok tina']
-const SILENCE_RMS    = 10    // time-domain RMS below this = silence (0–128 range)
-const SILENCE_MS     = 2000  // 2s continuous silence after speech → stop recording
-const MIN_SPEECH_MS  = 400   // must have spoken for at least 400ms before cutoff can trigger
-const NO_SPEECH_MS   = 9000  // 9s no speech at all → exit conversation mode
+const SILENCE_RMS       = 10   // time-domain RMS below this = silence (0–128 range)
+const SILENCE_MS        = 3500 // 3.5s continuous silence after speech → stop recording
+const MIN_SPEECH_MS     = 400  // must have spoken for at least 400ms before cutoff can trigger
+const NO_SPEECH_MS      = 9000 // 9s no speech at all → exit conversation mode
+const SILENCE_FRAMES    = 5    // require N consecutive silent frames before starting countdown (~400ms)
 
 function getMimeType() {
   const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
@@ -203,7 +204,13 @@ export function useTina({ micDeviceId } = {}) {
     unlockAudio()
     if (mediaRef.current || !wsRef.current) return
     try {
-      const stream   = await navigator.mediaDevices.getUserMedia({ audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true })
+      const audioConstraints = {
+        echoCancellation:   false,
+        noiseSuppression:   false,
+        autoGainControl:    false,
+        ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
+      }
+      const stream   = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
       const mimeType = getMimeType()
       const rec      = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       chunksRef.current = []
@@ -259,22 +266,31 @@ export function useTina({ micDeviceId } = {}) {
     unlockAudio()
     if (mediaRef.current || !wsRef.current || !convActiveRef.current) return
     try {
-      const stream   = await navigator.mediaDevices.getUserMedia({ audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true })
+      // Disable browser audio processing — echo cancellation distorts TTS playback
+      // while the mic is open; noise suppression and AGC cause robotic artefacts
+      const audioConstraints = {
+        echoCancellation:   false,
+        noiseSuppression:   false,
+        autoGainControl:    false,
+        ...(micDeviceId ? { deviceId: { exact: micDeviceId } } : {}),
+      }
+      const stream   = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
       const mimeType = getMimeType()
       const rec      = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
       chunksRef.current = []
 
-      // Silence detection via time-domain RMS
-      const audioCtx   = getAudioCtx()
-      const source     = audioCtx.createMediaStreamSource(stream)
-      const analyser   = audioCtx.createAnalyser()
+      // Use a dedicated AudioContext for VAD — keeps it isolated from TTS playback
+      const vadCtx     = new AudioContext({ sampleRate: 16000 })
+      const source     = vadCtx.createMediaStreamSource(stream)
+      const analyser   = vadCtx.createAnalyser()
       analyser.fftSize = 512
       source.connect(analyser)
       const buf        = new Uint8Array(analyser.frequencyBinCount)
 
-      let hasSpeech    = false
-      let speechStart  = null   // when speech first began
-      let silenceStart = null
+      let hasSpeech      = false
+      let speechStart    = null   // when speech first began
+      let silenceStart   = null
+      let silentFrames   = 0      // consecutive silent frames counter
 
       // If user never speaks, exit conversation after NO_SPEECH_MS
       noSpeechRef.current = setTimeout(() => {
@@ -286,25 +302,33 @@ export function useTina({ micDeviceId } = {}) {
         const rms = Math.sqrt(buf.reduce((s, v) => s + (v - 128) ** 2, 0) / buf.length)
 
         if (rms > SILENCE_RMS) {
-          // Speech detected
+          // Speech detected — reset silence tracking
           if (!speechStart) speechStart = Date.now()
           hasSpeech    = true
           silenceStart = null
+          silentFrames = 0
           clearTimeout(noSpeechRef.current)
           noSpeechRef.current = null
         } else if (hasSpeech && speechStart && Date.now() - speechStart > MIN_SPEECH_MS) {
-          // Only start silence countdown after MIN_SPEECH_MS of actual speech
-          if (!silenceStart) {
-            silenceStart = Date.now()
-          } else if (Date.now() - silenceStart > SILENCE_MS) {
-            clearInterval(vadRef.current)
-            vadRef.current = null
-            if (mediaRef.current) {
-              mediaRef.current.stop()
-              mediaRef.current = null
-              setIsRecording(false)
+          // Require SILENCE_FRAMES consecutive silent frames before starting countdown
+          // — prevents word-boundary dips from triggering cutoff
+          silentFrames++
+          if (silentFrames >= SILENCE_FRAMES) {
+            if (!silenceStart) {
+              silenceStart = Date.now()
+            } else if (Date.now() - silenceStart > SILENCE_MS) {
+              clearInterval(vadRef.current)
+              vadRef.current = null
+              vadCtx.close().catch(() => {})
+              if (mediaRef.current) {
+                mediaRef.current.stop()
+                mediaRef.current = null
+                setIsRecording(false)
+              }
             }
           }
+        } else {
+          silentFrames = 0
         }
       }, 80)
 
@@ -314,6 +338,7 @@ export function useTina({ micDeviceId } = {}) {
         clearTimeout(noSpeechRef.current)
         vadRef.current      = null
         noSpeechRef.current = null
+        vadCtx.close().catch(() => {})
         const type = mimeType || 'audio/webm'
         const blob = new Blob(chunksRef.current, { type })
         blob.arrayBuffer().then(arrayBuf => {
