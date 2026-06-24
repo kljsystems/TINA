@@ -84,7 +84,7 @@ FRAME_MS           = 100
 
 # ── TTS (ElevenLabs) ─────────────────────────────────────────────────────────
 ELEVENLABS_MODEL   = "eleven_flash_v2_5"
-ELEVENLABS_FORMAT  = "mp3_44100_128"
+ELEVENLABS_FORMAT  = "pcm_22050"
 DEFAULT_VOICE_ID   = "XrExE9yKIg1WjnnlVkGX"  # Matilda (Australian female, warm)
 
 # ── Base directory (change this in .env when moving to dedicated PC) ─────────

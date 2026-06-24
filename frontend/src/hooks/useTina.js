@@ -160,14 +160,28 @@ export function useTina({ micDeviceId } = {}) {
     return audioCtxRef.current
   }, [])
 
-  const scheduleChunk = useCallback(async (base64data) => {
+  const scheduleChunk = useCallback(async (base64data, format) => {
     try {
       const ctx = getAudioCtx()
       if (ctx.state === 'suspended') await ctx.resume()
-      const bytes   = Uint8Array.from(atob(base64data), c => c.charCodeAt(0))
-      const decoded = await ctx.decodeAudioData(bytes.buffer)
-      const src     = ctx.createBufferSource()
-      src.buffer    = decoded
+      const bytes = Uint8Array.from(atob(base64data), c => c.charCodeAt(0))
+
+      let decoded
+      if (format && format.startsWith('pcm_')) {
+        // Raw signed 16-bit little-endian PCM — decode manually, no compression artifacts
+        const sampleRate = parseInt(format.split('_')[1], 10)
+        const int16      = new Int16Array(bytes.buffer)
+        const float32    = new Float32Array(int16.length)
+        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0
+        decoded = ctx.createBuffer(1, float32.length, sampleRate)
+        decoded.copyToChannel(float32, 0)
+      } else {
+        // MP3 / other compressed formats
+        decoded = await ctx.decodeAudioData(bytes.buffer)
+      }
+
+      const src = ctx.createBufferSource()
+      src.buffer = decoded
       src.connect(ctx.destination)
       const startAt = Math.max(ctx.currentTime, nextStartTimeRef.current)
       src.start(startAt)
@@ -543,7 +557,7 @@ export function useTina({ micDeviceId } = {}) {
           setAgentStatuses(prev => ({ ...prev, tina: { ...prev.tina, tool: null } }))
           break
         case 'audio_chunk':
-          await scheduleChunk(data.data)
+          await scheduleChunk(data.data, data.format)
           break
         case 'audio_end': {
           const ctx = audioCtxRef.current

@@ -1712,9 +1712,10 @@ async def _tts_stream(reply: str):
             audio = await synthesise(reply.strip())
             if audio:
                 await broadcast({
-                    "type":  "audio_chunk",
-                    "index": 0,
-                    "data":  base64.b64encode(audio).decode(),
+                    "type":   "audio_chunk",
+                    "format": ELEVENLABS_FORMAT,
+                    "index":  0,
+                    "data":   base64.b64encode(audio).decode(),
                 })
             else:
                 print("[TTS] ElevenLabs returned nothing — falling back to pyttsx3")
