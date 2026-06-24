@@ -40,11 +40,34 @@ def _detect_loop(loop, callback):
         print(f"[wake-word] model load failed: {e}")
         return
 
-    RATE      = 16000
-    CHUNK     = RATE * 2   # 2-second windows
-    COOLDOWN  = 5.0        # seconds before re-triggering
-    last_trig = 0.0
+    WHISPER_RATE = 16000   # faster-whisper expects 16 kHz
+    COOLDOWN     = 5.0     # seconds before re-triggering
+    last_trig    = 0.0
 
+    # Record at the device's native rate to avoid forcing WASAPI to resample
+    # the entire Windows audio pipeline (which makes all system audio robotic).
+    try:
+        dev_info    = sd.query_devices(kind="input")
+        NATIVE_RATE = int(dev_info["default_samplerate"])
+    except Exception:
+        NATIVE_RATE = 48000
+    CHUNK = NATIVE_RATE * 2  # 2-second windows at native rate
+
+    def _resample(flat):
+        """Downsample from NATIVE_RATE to WHISPER_RATE using numpy interpolation."""
+        if NATIVE_RATE == WHISPER_RATE:
+            return flat
+        target_len = int(len(flat) * WHISPER_RATE / NATIVE_RATE)
+        # Integer ratio → fast decimation; otherwise linear interpolation
+        if NATIVE_RATE % WHISPER_RATE == 0:
+            return flat[:: NATIVE_RATE // WHISPER_RATE]
+        return np.interp(
+            np.linspace(0, len(flat) - 1, target_len),
+            np.arange(len(flat)),
+            flat,
+        ).astype(np.float32)
+
+    print(f"[wake-word] recording at {NATIVE_RATE} Hz (device native), downsampling to {WHISPER_RATE} Hz for transcription")
     print("[wake-word] listening for 'tina'…")
     asyncio.run_coroutine_threadsafe(callback("ready", ""), loop)
 
@@ -53,12 +76,12 @@ def _detect_loop(loop, callback):
             time.sleep(0.3)
             continue
         try:
-            audio = sd.rec(CHUNK, samplerate=RATE, channels=1, dtype="float32")
+            audio = sd.rec(CHUNK, samplerate=NATIVE_RATE, channels=1, dtype="float32")
             sd.wait()
             if not _active:
                 break
 
-            flat = audio.flatten()
+            flat = _resample(audio.flatten())
 
             # Skip silent chunks — saves transcription overhead
             if float(np.abs(flat).mean()) < 0.003:
