@@ -4,7 +4,7 @@ const WS_URL       = 'ws://localhost:8000/ws'
 const RECONNECT_MS = 3000
 const WAKE_WORDS   = ['hey tina', 'tina', 'ok tina']
 const SILENCE_RMS       = 6    // RMS below this = silence (lower = only very quiet counts as silence)
-const SILENCE_MS        = 4000 // 4s continuous silence after speech → stop recording
+const SILENCE_MS        = 2500 // 2.5s continuous silence after speech → stop recording
 const MIN_SPEECH_MS     = 400  // must have spoken for at least 400ms before cutoff can trigger
 const NO_SPEECH_MS      = 9000 // 9s no speech at all → exit conversation mode
 const SILENCE_FRAMES    = 12   // ~960ms of consecutive silence required before countdown starts
