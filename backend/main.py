@@ -2214,6 +2214,14 @@ async def websocket_endpoint(ws: WebSocket):
                 elif msg_type == "audio_done":
                     await broadcast({"type": "state", "state": "listening"})
 
+                elif msg_type == "pause_wake_word":
+                    from tina import wake_word as _ww
+                    _ww.pause()
+
+                elif msg_type == "resume_wake_word":
+                    from tina import wake_word as _ww
+                    _ww.resume()
+
                 elif msg_type == "reset":
                     agent.reset()
 

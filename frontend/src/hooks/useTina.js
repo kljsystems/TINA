@@ -689,6 +689,30 @@ export function useTina({ micDeviceId } = {}) {
     }
   }, [connect])
 
+  // Pause wake word mic when TINA tab is not visible — stops the audio driver's
+  // AEC from activating system-wide and making YouTube/Spotify sound robotic
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+      if (document.hidden) {
+        wsRef.current.send(JSON.stringify({ type: 'pause_wake_word' }))
+        // Also stop frontend Web Speech API if running
+        if (recognitionRef.current) {
+          try { recognitionRef.current.abort() } catch {}
+          recognitionRef.current = null
+        }
+        wakeActiveRef.current = false
+        setWakeActive(false)
+      } else {
+        wsRef.current.send(JSON.stringify({ type: 'resume_wake_word' }))
+        // Restart wake word detection when tab becomes visible again
+        setTimeout(() => cb.current.startWakeWord(), 500)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
+
   return {
     connected, tinaState, isRecording, activeAgent, conversation,
     stats, voice, user, lastTool, alert, lastResponse,
