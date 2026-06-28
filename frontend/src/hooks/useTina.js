@@ -49,6 +49,7 @@ export function useTina({ micDeviceId } = {}) {
     } catch { return [] }
   })
   const [activityLogVisible,  setActivityLogVisible]  = useState(true)
+  const [gamingMode,          setGamingModeState]     = useState(false)
   const [agentStatuses, setAgentStatuses] = useState({
     tina:      { status: 'offline', tool: null, color: '#8B5CF6', glow: '#A78BFA' },
     research:  { status: 'idle',    tool: null, color: '#06b6d4', glow: '#67e8f9',  label: 'Charlie' },
@@ -208,6 +209,11 @@ export function useTina({ micDeviceId } = {}) {
     if (wsRef.current?.readyState === WebSocket.OPEN)
       wsRef.current.send(JSON.stringify({ type: 'message', text }))
   }, [unlockAudio])
+
+  const setGamingMode = useCallback(value => {
+    if (wsRef.current?.readyState === WebSocket.OPEN)
+      wsRef.current.send(JSON.stringify({ type: 'set_gaming_mode', value }))
+  }, [])
 
   // Stop any in-progress recording (manual or VAD) and clear VAD timers
   const stopRecording = useCallback(() => {
@@ -671,6 +677,12 @@ export function useTina({ micDeviceId } = {}) {
         case 'prefs':
           if (data.data?.activity_log !== undefined)
             setActivityLogVisible(data.data.activity_log)
+          if (data.data?.gaming_mode !== undefined)
+            setGamingModeState(data.data.gaming_mode)
+          break
+        case 'gaming_mode':
+          setGamingModeState(data.active)
+          showAlert(data.active ? 'gaming mode on' : 'gaming mode off', 'tool')
           break
         case 'ui_pref':
           if (data.key === 'activity_log') setActivityLogVisible(data.value)
@@ -745,6 +757,7 @@ export function useTina({ micDeviceId } = {}) {
     kaosLive, stripeLive, notificationHistory,
     emailDrafts, setEmailDrafts,
     activityLogVisible,
+    gamingMode, setGamingMode,
     wakeActive, convActive,
     sendMessage, startRecording, stopRecording,
     enterConversation, exitConversation, startWakeWord,

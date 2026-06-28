@@ -68,13 +68,68 @@ _TOOL_TTL = {
 
 def _load_prefs() -> dict:
     from config import PREFS_FILE
-    defaults = {"activity_log": True}
+    defaults = {"activity_log": True, "gaming_mode": False}
     if not os.path.exists(PREFS_FILE):
         return defaults
     try:
         return {**defaults, **_json.load(open(PREFS_FILE))}
     except Exception:
         return defaults
+
+
+def _save_prefs(prefs: dict) -> None:
+    from config import PREFS_FILE
+    try:
+        os.makedirs(os.path.dirname(PREFS_FILE), exist_ok=True)
+        with open(PREFS_FILE, "w") as f:
+            _json.dump(prefs, f, indent=2)
+    except Exception as e:
+        print(f"[prefs] save failed: {e}")
+
+
+# ── Gaming mode ────────────────────────────────────────────────────────────────
+# When active TINA: pauses all background schedulers, stays silent (TTS muted),
+# suppresses dashboard popup cards, and — once local inference exists — must skip
+# any local GPU work so it never contends with a running game. Cloud calls still
+# work, so direct chat (text on the dashboard) keeps functioning while gaming.
+# Phase 1 = manual toggle + voice command. Auto game-detection is phase 2.
+_gaming_mode: bool = False
+
+
+def gaming_mode_active() -> bool:
+    """Single source of truth for gaming mode.
+
+    FUTURE: any local LLM / image-video generation backend must check this before
+    running and either route to cloud or defer, so local GPU work never competes
+    with a game for VRAM/compute.
+    """
+    return _gaming_mode
+
+
+async def _set_gaming_mode(value: bool) -> None:
+    """Flip gaming mode, persist it, tell the dashboard, and confirm to Ky.
+
+    Enabling is silent (TTS is gated off the moment _gaming_mode flips True);
+    disabling speaks the 'back online' confirmation since voice is on again.
+    """
+    global _gaming_mode
+    changed       = (_gaming_mode != value)
+    _gaming_mode  = value
+
+    if changed:
+        prefs = _load_prefs()
+        prefs["gaming_mode"] = value
+        _save_prefs(prefs)
+        print(f"[gaming-mode] {'ENABLED — schedulers paused, voice muted, popups suppressed' if value else 'DISABLED — schedulers, voice and popups resumed'}")
+
+    await broadcast({"type": "gaming_mode", "active": value})
+
+    if changed:
+        msg = ("Gaming mode on. I'll stay quiet and hold all background tasks until you're done."
+               if value else
+               "Gaming mode off. Voice and background tasks are back online.")
+        await broadcast({"type": "response", "text": msg})
+        await _tts_stream(msg)  # self-gates: silent while gaming mode is on
 
 
 def _make_tool_result_event(name: str, result) -> dict | None:
@@ -139,6 +194,9 @@ async def _schedule_nightly_reindex():
         if now >= target:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
+        if _gaming_mode:
+            print("[nightly-reindex] skipped — gaming mode active")
+            continue
         await _run_project_reindex()
 
 
@@ -332,6 +390,10 @@ async def _run_startup_briefing():
 
     await asyncio.sleep(3)
 
+    if _gaming_mode:
+        print("[briefing] skipped startup briefing — gaming mode active")
+        return
+
     try:
         await _run_morning_briefing()
         with open(BRIEFING_STATE_FILE, "w") as f:
@@ -414,6 +476,8 @@ async def _schedule_weekly_briefing():
 
     while True:
         await asyncio.sleep(60)  # check every minute
+        if _gaming_mode:
+            continue
         now  = datetime.now()
         today = date.today()
 
@@ -486,6 +550,8 @@ async def _schedule_email_triage():
 
     while True:
         await asyncio.sleep(60)
+        if _gaming_mode:
+            continue
         now = datetime.now()
         key = now.strftime("%Y-%m-%d-") + str(now.hour)
 
@@ -806,10 +872,11 @@ async def _schedule_kaos_monitor():
     """Check KAOS every 15 minutes for new tickets, signups, and subscription changes."""
     await asyncio.sleep(180)  # Let the system settle
     while True:
-        try:
-            await _run_kaos_monitor()
-        except Exception as e:
-            print(f"[kaos-monitor] scheduler error: {e}")
+        if not _gaming_mode:
+            try:
+                await _run_kaos_monitor()
+            except Exception as e:
+                print(f"[kaos-monitor] scheduler error: {e}")
         await asyncio.sleep(900)  # 15 minutes
 
 
@@ -954,10 +1021,11 @@ async def _schedule_stripe_monitor():
     """Check Stripe every 30 minutes for payment events."""
     await asyncio.sleep(240)
     while True:
-        try:
-            await _run_stripe_monitor()
-        except Exception as e:
-            print(f"[stripe-monitor] scheduler error: {e}")
+        if not _gaming_mode:
+            try:
+                await _run_stripe_monitor()
+            except Exception as e:
+                print(f"[stripe-monitor] scheduler error: {e}")
         await asyncio.sleep(1800)  # 30 minutes
 
 
@@ -1004,6 +1072,8 @@ async def _schedule_pattern_scan():
 
     while True:
         await asyncio.sleep(60)
+        if _gaming_mode:
+            continue
         now = datetime.now()
 
         # Fire on Sunday (weekday 6) at or after 18:00
@@ -1034,11 +1104,12 @@ async def _schedule_inbox_pipeline():
     """Classify and route inbox items every 15 minutes."""
     await asyncio.sleep(120)  # Let the system settle after startup
     while True:
-        try:
-            await _run_inbox_classifier()
-            await _run_inbox_router()
-        except Exception as e:
-            print(f"[inbox-pipeline] error: {e}")
+        if not _gaming_mode:
+            try:
+                await _run_inbox_classifier()
+                await _run_inbox_router()
+            except Exception as e:
+                print(f"[inbox-pipeline] error: {e}")
         await asyncio.sleep(900)  # 15 minutes
 
 
@@ -1118,6 +1189,11 @@ async def _drain_preview_queue():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _gaming_mode
+    _gaming_mode = bool(_load_prefs().get("gaming_mode", False))
+    if _gaming_mode:
+        print("[gaming-mode] restored ENABLED from prefs — schedulers will stay paused until disabled")
+
     asyncio.create_task(_schedule_nightly_reindex())
     asyncio.create_task(_run_startup_briefing())
     asyncio.create_task(_post_restart_cleanup())
@@ -1189,6 +1265,9 @@ def _is_approval(text: str) -> bool:
 
 
 async def broadcast(data: dict):
+    # Gaming mode: hold back popup cards / proactive alerts so nothing pops over a game.
+    if _gaming_mode and data.get("type") == "featured_panel":
+        return
     dead = []
     for ws in connections:
         try:
@@ -1708,6 +1787,9 @@ async def _pyttsx3_speak(text: str):
 
 async def _tts_stream(reply: str):
     """Send reply to ElevenLabs as one call. Serialised via _tts_lock — no simultaneous playback."""
+    # Gaming mode: stay silent. The text was already broadcast to the dashboard.
+    if _gaming_mode:
+        return
     async with _tts_lock:
         # Pause wake-word detector so TINA's voice doesn't re-trigger herself
         try:
@@ -1750,6 +1832,19 @@ async def _handle_message(text: str):
     # context but do NOT generate a spoken response (the agent already spoke via verbal_summary).
     if text.startswith('[SYSTEM:'):
         agent.history.append({"role": "user", "content": text})
+        return
+
+    # Voice/text control: gaming mode on/off/toggle. Intercept before anything else so
+    # it works even while an agent is awaiting approval. "gaming mode" alone toggles.
+    _low = text.lower()
+    if "gaming mode" in _low:
+        if any(w in _low for w in ("off", "disable", "stop", "end", "deactivate", "exit", "done")):
+            await _set_gaming_mode(False)
+        elif any(w in _low for w in ("on", "enable", "start", "activate", "begin", "engage")):
+            await _set_gaming_mode(True)
+        else:
+            await _set_gaming_mode(not _gaming_mode)
+        await broadcast({"type": "state", "state": "listening"})
         return
 
     # Check if an agent is waiting for Ky's approval and this message is one
@@ -2157,6 +2252,7 @@ async def websocket_endpoint(ws: WebSocket):
     connections.append(ws)
     await ws.send_json({"type": "state", "state": "listening"})
     await ws.send_json({"type": "prefs", "data": _load_prefs()})
+    await ws.send_json({"type": "gaming_mode", "active": _gaming_mode})
 
     # Re-hydrate dashboard with any agents that are already running
     # (happens after a backend restart — tasks resume but frontend reconnects cold)
@@ -2231,6 +2327,9 @@ async def websocket_endpoint(ws: WebSocket):
                 elif msg_type == "resume_wake_word":
                     from tina import wake_word as _ww
                     _ww.resume()
+
+                elif msg_type == "set_gaming_mode":
+                    await _set_gaming_mode(bool(data.get("value")))
 
                 elif msg_type == "reset":
                     agent.reset()

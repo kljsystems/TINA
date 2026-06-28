@@ -752,6 +752,7 @@ export default function App() {
     morningActive, wakeWordActive,
     kaosLive, stripeLive, notificationHistory,
     emailDrafts, setEmailDrafts,
+    gamingMode, setGamingMode,
     wakeActive, convActive,
     sendMessage, stopRecording,
     enterConversation, exitConversation,
@@ -1051,6 +1052,26 @@ export default function App() {
                 animation: 'pulse 2s ease-in-out infinite',
               }} />
             )}
+          </button>
+
+          {/* GAMING MODE toggle — pauses schedulers, mutes voice, suppresses popups */}
+          <button
+            onClick={() => setGamingMode(!gamingMode)}
+            title={gamingMode
+              ? 'Gaming mode ON — schedulers paused, voice muted, popups held'
+              : 'Gaming mode OFF — click to silence TINA while you play'}
+            style={{
+              padding: '5px 18px', fontSize: 10, letterSpacing: 2,
+              background: gamingMode ? '#4ade8033' : `${P}18`,
+              border: `1px solid ${gamingMode ? '#4ade80' : P + '44'}`,
+              color: gamingMode ? '#4ade80' : PG + 'bb',
+              borderRadius: 3, cursor: 'pointer',
+              textTransform: 'uppercase', transition: 'all 0.2s',
+              fontFamily: "'Courier New',monospace",
+              animation: gamingMode ? 'breathe 3s ease-in-out infinite' : 'none',
+            }}
+          >
+            {gamingMode ? '🎮 GAMING' : 'GAMING'}
           </button>
 
           <div style={{ textAlign: 'right', fontSize: 11, letterSpacing: 1, opacity: 0.55 }}>
