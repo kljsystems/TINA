@@ -347,6 +347,14 @@ class TinaAgent:
 
         use_thinking = _warrants_thinking(message)
 
+        # Safety ceiling — the orchestrator loop is otherwise unbounded. Some tools
+        # (run_diagnostics, delegate_to_agent) return a "started" ack rather than a
+        # result, so a model can re-call them forever. Force a final text reply after
+        # this many tool rounds; hard-stop if it still won't stop.
+        _MAX_ORCH_TOOL_ROUNDS = 10
+        tool_rounds = 0
+        forced_wrap = False
+
         # Pre-build cached system + tools (stable across turns — cache saves ~90% on re-sends)
         now = datetime.now()
         _system_text = (
@@ -378,6 +386,15 @@ class TinaAgent:
             )
 
             if response.stop_reason == "tool_use":
+                # Already told it to stop and it's still calling tools → break the loop.
+                if forced_wrap:
+                    reply = ("I got stuck repeating tool calls, so I stopped. "
+                             "If you asked for diagnostics, the results are on the dashboard. "
+                             "Tell me what you'd like and I'll try a cleaner approach.")
+                    self.history.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
+                    asyncio.create_task(self._save_turns(message, reply))
+                    return reply
+
                 self.history.append({"role": "assistant", "content": response.content})
                 tool_blocks = [b for b in response.content if b.type == "tool_use"]
 
@@ -405,6 +422,18 @@ class TinaAgent:
                 tool_results = list(await asyncio.gather(*[_run_one(b) for b in tool_blocks]))
                 self.history.append({"role": "user", "content": tool_results})
 
+                tool_rounds += 1
+                if tool_rounds >= _MAX_ORCH_TOOL_ROUNDS:
+                    forced_wrap = True
+                    self.history.append({
+                        "role": "user",
+                        "content": (
+                            f"You have made {tool_rounds} rounds of tool calls. Stop calling tools now "
+                            "and reply to me in plain text — summarise what you found or did. "
+                            "Do not call any more tools."
+                        ),
+                    })
+
             else:
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
                 self.history.append({"role": "assistant", "content": response.content})
@@ -425,7 +454,9 @@ class TinaAgent:
         if name == "run_diagnostics":
             if self.diag_runner:
                 await self.diag_runner()
-            return "Diagnostics running — results are streaming live to the dashboard."
+            return ("Diagnostics are now running and results stream live to the dashboard. "
+                    "Do NOT call run_diagnostics again — the results will not come back to you here. "
+                    "Just tell the user the diagnostics are running and to check the dashboard.")
 
         if name == "delegate_to_agent":
             agent_key = inputs.get("agent", "")

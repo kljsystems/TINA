@@ -124,6 +124,19 @@ async def _set_gaming_mode(value: bool) -> None:
 
     await broadcast({"type": "gaming_mode", "active": value})
 
+    # Wake word follows gaming mode: silence the mic while gaming, resume after.
+    if WAKE_WORD_ENABLED:
+        try:
+            from tina.wake_word import pause as _ww_pause, resume as _ww_resume
+            if value:
+                _ww_pause()
+                await broadcast({"type": "wake_word_disabled"})
+            else:
+                _ww_resume()
+                await broadcast({"type": "wake_word_ready"})
+        except Exception as e:
+            print(f"[gaming-mode] wake-word toggle failed: {e}")
+
     if changed:
         msg = ("Gaming mode on. I'll stay quiet and hold all background tasks until you're done."
                if value else
@@ -1222,6 +1235,11 @@ async def lifespan(app: FastAPI):
                     await broadcast({"type": "wake_word_ready"})
 
             _ww_start(_ww_loop, _on_wake_word)
+            # If gaming mode was restored from prefs, start paused.
+            if _gaming_mode:
+                from tina.wake_word import pause as _ww_pause
+                _ww_pause()
+                print("[wake-word] paused — gaming mode is active")
         except Exception as e:
             print(f"[wake-word] could not start: {e}")
     else:
