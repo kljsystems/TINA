@@ -61,6 +61,38 @@ MODEL              = "claude-sonnet-4-6"        # specialist agents (simple task
 OPUS_MODEL         = "claude-opus-4-8"            # specialist agents (complex tasks)
 ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — full intelligence
 
+# ── Local / hybrid model routing (Ollama) ──────────────────────────────────────
+# LLM_MODE: "cloud"  = all Claude (original behaviour)
+#           "hybrid" = orchestrator + light specialists local, tool-heavy/complex on Claude
+#           "local"  = everything on the local model
+# Per-agent override: set MODEL_<KEY> in .env (KEY = tina|research|coding|email|
+#   data|marketing|website|pm), e.g. MODEL_TINA=claude-sonnet-4-6  or  MODEL_DATA=ollama/qwen2.5:7b
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+LOCAL_MODEL     = os.getenv("LOCAL_MODEL",     "ollama/qwen2.5:7b")
+LLM_MODE        = os.getenv("LLM_MODE",        "hybrid").lower()
+
+# In hybrid mode these agents stay on Claude (heavy tool use / correctness-critical).
+_HYBRID_CLOUD_AGENTS = {"coding", "data"}   # Sam (coding), Connor (data)
+
+
+def model_for(agent_key: str, *, complex: bool = False) -> str:
+    """Resolve which model an agent should use, honouring LLM_MODE + per-agent overrides."""
+    override = os.getenv(f"MODEL_{agent_key.upper()}")
+    if override:
+        return override
+    if LLM_MODE == "cloud":
+        if agent_key == "tina":
+            return ORCHESTRATOR_MODEL
+        return OPUS_MODEL if complex else MODEL
+    if LLM_MODE == "local":
+        return LOCAL_MODEL
+    # hybrid
+    if agent_key == "tina":
+        return LOCAL_MODEL
+    if agent_key in _HYBRID_CLOUD_AGENTS:
+        return OPUS_MODEL if complex else MODEL
+    return OPUS_MODEL if complex else LOCAL_MODEL
+
 # ── Wake & Exit ───────────────────────────────────────────────────────────────
 WAKE_WORDS        = ["hey tina", "tina"]
 EXIT_COMMANDS     = ["goodbye tina", "exit", "quit", "shutdown"]

@@ -6,7 +6,8 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL
+from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, model_for
+from tina.llm import RoutedLLM
 from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool, video_tool, capture_tool, kaos_tool, social_tool, gdrive_tool, stripe_tool
 from tina.agents.base import _build_tool_content
 from tina.agents.research  import ResearchAgent
@@ -175,7 +176,7 @@ def _warrants_thinking(message: str) -> bool:
 
 class TinaAgent:
     def __init__(self, background_runner=None, diag_runner=None):
-        self.client            = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self.client            = RoutedLLM(api_key=ANTHROPIC_API_KEY)
         self.history:list[dict] = []
         self.background_runner = background_runner  # injected by main.py
         self.diag_runner       = diag_runner        # injected by main.py
@@ -360,8 +361,9 @@ class TinaAgent:
                 {"thinking": {"type": "enabled", "budget_tokens": 4000}}
                 if use_thinking else {}
             )
+            _orch_model = model_for("tina")
             response = await self.client.messages.create(
-                model=ORCHESTRATOR_MODEL,
+                model=_orch_model,
                 max_tokens=6000 if use_thinking else 1024,
                 system=_system_cached,
                 tools=_tools_cached,

@@ -2002,7 +2002,9 @@ async def promote_project_endpoint(project_name: str):
 
 @app.get("/api/status")
 async def get_status():
-    from config import DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY, OPENWEATHER_API_KEY, SLACK_TINA_BOT_TOKEN
+    from config import (DEEPGRAM_API_KEY, ELEVENLABS_API_KEY, GITHUB_TOKEN, TAVILY_API_KEY,
+                        OPENWEATHER_API_KEY, SLACK_TINA_BOT_TOKEN, LLM_MODE, model_for)
+    _agent_keys = ["research", "coding", "email", "data", "marketing", "website", "pm"]
     return {
         "deepgram":    bool(DEEPGRAM_API_KEY),
         "elevenlabs":  bool(ELEVENLABS_API_KEY),
@@ -2010,6 +2012,11 @@ async def get_status():
         "tavily":      bool(TAVILY_API_KEY),
         "weather":     bool(OPENWEATHER_API_KEY),
         "slack":       bool(SLACK_TINA_BOT_TOKEN),
+        "models": {
+            "mode":         LLM_MODE,
+            "orchestrator": model_for("tina"),
+            "agents":       {k: model_for(k) for k in _agent_keys},
+        },
     }
 
 

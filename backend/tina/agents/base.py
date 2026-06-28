@@ -5,7 +5,8 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS
+from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS, model_for
+from tina.llm import RoutedLLM
 
 # ── Context management constants ──────────────────────────────────────────────
 _TOOL_OUTPUT_MAX_CHARS  = 1_500  # cap any single tool result stored in history
@@ -217,13 +218,21 @@ class BaseAgent:
     max_tokens:           int  = 4096  # override per agent for tasks that need longer responses
 
     def __init__(self):
-        self.client    = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        self.client    = RoutedLLM(api_key=ANTHROPIC_API_KEY)
         self._depth    = 0  # delegation depth — set by _run_sub_agent before spawning
         self._definitions = [d for m in self.tool_modules for d in m.DEFINITIONS]
         self._handlers    = {d["name"]: m.handle for m in self.tool_modules for d in m.DEFINITIONS}
 
         if self.allow_delegation:
             self._definitions.append(self._build_request_agent_tool())
+
+    def _agent_key(self) -> str:
+        """Registry key for this agent (research/coding/email/...) for model routing."""
+        from tina.agent import _AGENTS
+        for key, cls in _AGENTS.items():
+            if isinstance(self, cls):
+                return key
+        return "specialist"
 
     def _build_request_agent_tool(self) -> dict:
         from tina.agent import _AGENTS
@@ -285,7 +294,7 @@ class BaseAgent:
         if project_ctx:
             enriched_task = f"{project_ctx}\n\n---\n\n{enriched_task}"
 
-        model     = OPUS_MODEL if _is_complex_task(task) else MODEL
+        model     = model_for(self._agent_key(), complex=_is_complex_task(task))
         history        = [{"role": "user", "content": enriched_task}]
         qa_rounds      = 0
         tool_call_count = 0

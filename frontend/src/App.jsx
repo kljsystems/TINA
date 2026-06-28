@@ -898,6 +898,15 @@ export default function App() {
     { key: 'sl', label: 'SL', ok: services?.slack },
   ]
 
+  // Active model indicator — orchestrator (Tina) model, tinted by local vs cloud
+  const orchModel    = services?.models?.orchestrator || ''
+  const isLocalModel = orchModel.startsWith('ollama/')
+  const modelLabel   = orchModel.replace(/^ollama\//, '').replace(/^claude-/, '') || '—'
+  const modelTitle   = services?.models
+    ? `LLM mode: ${services.models.mode}\nTina (orchestrator): ${orchModel}\n` +
+      Object.entries(services.models.agents || {}).map(([k, v]) => `${k}: ${v}`).join('\n')
+    : ''
+
   return (
     <div style={{
       height: '100vh', overflow: 'hidden',
@@ -1006,6 +1015,23 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Active model indicator — which model Tina is running on (🖥 local / ☁ cloud) */}
+          {services?.models && (
+            <div
+              title={modelTitle}
+              style={{
+                padding: '5px 12px', fontSize: 9, letterSpacing: 1,
+                background: isLocalModel ? '#4ade8011' : `${P}18`,
+                border: `1px solid ${isLocalModel ? '#4ade8055' : P + '44'}`,
+                color: isLocalModel ? '#4ade80cc' : PG + 'bb',
+                borderRadius: 3, fontFamily: "'Courier New',monospace",
+                userSelect: 'none', whiteSpace: 'nowrap',
+              }}
+            >
+              {isLocalModel ? '🖥' : '☁'} {modelLabel}
+            </div>
+          )}
+
           {/* Voice indicator — SPACE activates, wake word auto-activates */}
           <div
             title={

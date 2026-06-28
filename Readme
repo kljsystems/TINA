@@ -129,6 +129,35 @@ cd frontend && npm run dev
 
 Open the Vite dev URL the frontend prints. Hold **spacebar** to talk.
 
+## Local / hybrid models (Ollama)
+
+TINA can run agents on a local model instead of Claude. Models are routed per-agent
+by `config.model_for()` and dispatched through `backend/tina/llm.py` (`RoutedLLM`),
+which translates the Anthropic message/tool protocol to Ollama's OpenAI-compatible
+endpoint. The Claude path is unchanged (prompt caching, extended thinking, tool_use).
+
+Prereq: install [Ollama](https://ollama.com) and pull a tool-capable model:
+```
+ollama pull qwen2.5:7b
+```
+
+Control it via `.env` (all optional — defaults shown):
+```
+LLM_MODE=hybrid                    # cloud | hybrid | local
+LOCAL_MODEL=ollama/qwen2.5:7b
+OLLAMA_BASE_URL=http://localhost:11434/v1
+# Per-agent override (KEY = tina|research|coding|email|data|marketing|website|pm):
+# MODEL_TINA=claude-sonnet-4-6     # e.g. keep the orchestrator on Claude
+# MODEL_DATA=ollama/qwen2.5:7b
+```
+- **cloud** — all Claude (original behaviour).
+- **hybrid** (default) — orchestrator + light specialists local; `coding` (Sam) and
+  `data` (Connor) and any *complex* specialist task stay on Claude.
+- **local** — everything on `LOCAL_MODEL`.
+
+Note: small local models are slower and less reliable at large multi-tool decisions
+than Claude. If Tina's routing feels off, set `MODEL_TINA=claude-sonnet-4-6`.
+
 ## Extending TINA
 
 - **New tool** — add a file in `tools/` with a `DEFINITIONS` list and a
