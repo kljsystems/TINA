@@ -365,7 +365,10 @@ class TinaAgent:
         _tools_cached  = [*_ALL_TOOLS[:-1], {**_ALL_TOOLS[-1], "cache_control": {"type": "ephemeral"}}]
 
         while True:
-            _orch_model = model_for("tina")
+            # Tier the orchestrator by turn difficulty: hard/strategic turns get the
+            # full orchestrator model (Sonnet) + thinking; routine turns get the cheap
+            # light model (Haiku). Saves tokens without leaving Claude for routing.
+            _orch_model = model_for("tina", complex=use_thinking)
             # On hard turns, give Tina adaptive thinking + high reasoning effort for
             # sharper routing. Orchestrator uses auto tool_choice, so thinking is safe
             # here (forced tool_choice would conflict). Adaptive replaces the removed

@@ -59,21 +59,26 @@ OUTLOOK_SENDER           = os.getenv("OUTLOOK_SENDER",           "kydan@kljsyste
 # ── AI Model ──────────────────────────────────────────────────────────────────
 MODEL              = "claude-sonnet-4-6"        # specialist agents (simple tasks)
 OPUS_MODEL         = "claude-opus-4-8"            # specialist agents (complex tasks)
-ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — full intelligence
+ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — hard/strategic turns
+# Cheap orchestrator tier for routine turns (greetings, simple tool calls, chit-chat).
+# Tina tiers between this and ORCHESTRATOR_MODEL by turn difficulty to save tokens
+# while staying on Claude for reliable tool routing. Override with MODEL_TINA in .env.
+ORCHESTRATOR_LIGHT_MODEL = os.getenv("ORCHESTRATOR_LIGHT_MODEL", "claude-haiku-4-5-20251001")
 
 # ── Local / hybrid model routing (Ollama) ──────────────────────────────────────
 # LLM_MODE: "cloud"  = all Claude (original behaviour)
-#           "hybrid" = QUALITY-FIRST: orchestrator routing + complex/critical work on Claude;
-#                      local model is the cost/offline lever for simple specialist tasks
-#           "local"  = everything on the local model
+#           "hybrid" = COST-FIRST / local-first: the local model handles every
+#                      specialist task by default; Claude is used only where it
+#                      actually matters — the orchestrator (Tina) and any task the
+#                      complexity heuristic flags as a genuine overhaul.
+#           "local"  = everything on the local model (zero API tokens)
 # Per-agent override: set MODEL_<KEY> in .env (KEY = tina|research|coding|email|
-#   data|marketing|website|pm), e.g. MODEL_TINA=claude-sonnet-4-6  or  MODEL_DATA=ollama/qwen2.5:7b
+#   data|marketing|website|pm). e.g. MODEL_CODING=claude-sonnet-4-6 pins Sam to
+#   Claude if you find local coding too weak; MODEL_DATA=ollama/qwen2.5:7b forces
+#   Connor local. Overrides win over LLM_MODE.
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 LOCAL_MODEL     = os.getenv("LOCAL_MODEL",     "ollama/qwen2.5:7b")
 LLM_MODE        = os.getenv("LLM_MODE",        "hybrid").lower()
-
-# In hybrid mode these agents stay on Claude (heavy tool use / correctness-critical).
-_HYBRID_CLOUD_AGENTS = {"coding", "data"}   # Sam (coding), Connor (data)
 
 
 def model_for(agent_key: str, *, complex: bool = False) -> str:
@@ -81,21 +86,21 @@ def model_for(agent_key: str, *, complex: bool = False) -> str:
     override = os.getenv(f"MODEL_{agent_key.upper()}")
     if override:
         return override
-    if LLM_MODE == "cloud":
-        if agent_key == "tina":
-            return ORCHESTRATOR_MODEL
-        return OPUS_MODEL if complex else MODEL
     if LLM_MODE == "local":
-        return LOCAL_MODEL
-    # hybrid (quality-first):
-    #   - orchestrator routing decisions → Claude (sharp delegation)
-    #   - any complex specialist task     → Opus (max intelligence)
-    #   - coding/data (correctness)       → Claude even for simple tasks
-    #   - other simple specialist tasks   → local (cheap, where smarts matter least)
+        return LOCAL_MODEL          # everything local — zero API tokens
+    # Orchestrator (Tina) always stays on Claude for reliable tool routing/delegation,
+    # but tiers by turn difficulty: cheap light model for routine turns, full
+    # orchestrator model for hard/strategic turns. In cloud mode she's always full.
     if agent_key == "tina":
-        return ORCHESTRATOR_MODEL
-    if agent_key in _HYBRID_CLOUD_AGENTS:
+        if LLM_MODE == "cloud":
+            return ORCHESTRATOR_MODEL
+        return ORCHESTRATOR_MODEL if complex else ORCHESTRATOR_LIGHT_MODEL
+    if LLM_MODE == "cloud":
         return OPUS_MODEL if complex else MODEL
+    # hybrid (COST-FIRST / local-first):
+    #   - any complex specialist task → Claude (Opus) — escalate only when necessary.
+    #   - every other specialist task → local model (the default; this is where the
+    #                                   token-heavy tool loops run, so it saves the most).
     return OPUS_MODEL if complex else LOCAL_MODEL
 
 
