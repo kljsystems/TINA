@@ -121,7 +121,7 @@ python scripts/auth_gmail.py
 ### 4. Run
 ```bash
 # Backend (from repo root)
-python backend/main.py
+python -m uvicorn backend.main:app --port 8000
 
 # Frontend (second terminal)
 cd frontend && npm run dev

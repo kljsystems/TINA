@@ -11,6 +11,8 @@ data/memory.json
 data/prefs.json
 data/tina_status.json
 data/summaries/
+# Machine-specific project registry — rebuilds from KLJ_BASE on first run
+data/projects.json
 
 # Runtime monitor/scheduler state (churns every run)
 data/briefing_date.txt
