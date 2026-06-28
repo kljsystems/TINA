@@ -6,7 +6,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, model_for
+from config import ANTHROPIC_API_KEY, SYSTEM_PROMPT, MODEL, ORCHESTRATOR_MODEL, SUPABASE_URL, model_for, effort_for
 from tina.llm import RoutedLLM
 from tools import weather, vault, calendar_tool, github_tool, slack_tool, docs_tool, project_tool, system_tool, video_tool, capture_tool, kaos_tool, social_tool, gdrive_tool, stripe_tool
 from tina.agents.base import _build_tool_content
@@ -357,11 +357,17 @@ class TinaAgent:
         _tools_cached  = [*_ALL_TOOLS[:-1], {**_ALL_TOOLS[-1], "cache_control": {"type": "ephemeral"}}]
 
         while True:
-            thinking_kwargs = (
-                {"thinking": {"type": "enabled", "budget_tokens": 4000}}
-                if use_thinking else {}
-            )
             _orch_model = model_for("tina")
+            # On hard turns, give Tina adaptive thinking + high reasoning effort for
+            # sharper routing. Orchestrator uses auto tool_choice, so thinking is safe
+            # here (forced tool_choice would conflict). Adaptive replaces the removed
+            # budget_tokens form. The local adapter drops both kwargs.
+            thinking_kwargs = {}
+            if use_thinking:
+                thinking_kwargs["thinking"] = {"type": "adaptive"}
+                _eff = effort_for(_orch_model, complex=True)
+                if _eff:
+                    thinking_kwargs["output_config"] = {"effort": _eff}
             response = await self.client.messages.create(
                 model=_orch_model,
                 max_tokens=6000 if use_thinking else 1024,

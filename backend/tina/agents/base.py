@@ -5,7 +5,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS, model_for
+from config import ANTHROPIC_API_KEY, MODEL, OPUS_MODEL, SUPABASE_URL, VAULT_DIR, PROJECTS, model_for, effort_for
 from tina.llm import RoutedLLM
 
 # ── Context management constants ──────────────────────────────────────────────
@@ -294,7 +294,9 @@ class BaseAgent:
         if project_ctx:
             enriched_task = f"{project_ctx}\n\n---\n\n{enriched_task}"
 
-        model     = model_for(self._agent_key(), complex=_is_complex_task(task))
+        _complex  = _is_complex_task(task)
+        model     = model_for(self._agent_key(), complex=_complex)
+        _effort   = effort_for(model, complex=_complex)   # None for local models
         history        = [{"role": "user", "content": enriched_task}]
         qa_rounds      = 0
         tool_call_count = 0
@@ -307,6 +309,10 @@ class BaseAgent:
                 system=self.system,
                 messages=history,
             )
+            # Reasoning-effort boost on Claude models (quality-first). Compatible with
+            # forced tool_choice; the local adapter drops output_config it can't honor.
+            if _effort:
+                kwargs["output_config"] = {"effort": _effort}
             if self._definitions:
                 kwargs["tools"] = self._definitions
                 # Force tool calls until force_tool_min_calls is reached.

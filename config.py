@@ -63,7 +63,8 @@ ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — full i
 
 # ── Local / hybrid model routing (Ollama) ──────────────────────────────────────
 # LLM_MODE: "cloud"  = all Claude (original behaviour)
-#           "hybrid" = orchestrator + light specialists local, tool-heavy/complex on Claude
+#           "hybrid" = QUALITY-FIRST: orchestrator routing + complex/critical work on Claude;
+#                      local model is the cost/offline lever for simple specialist tasks
 #           "local"  = everything on the local model
 # Per-agent override: set MODEL_<KEY> in .env (KEY = tina|research|coding|email|
 #   data|marketing|website|pm), e.g. MODEL_TINA=claude-sonnet-4-6  or  MODEL_DATA=ollama/qwen2.5:7b
@@ -86,12 +87,33 @@ def model_for(agent_key: str, *, complex: bool = False) -> str:
         return OPUS_MODEL if complex else MODEL
     if LLM_MODE == "local":
         return LOCAL_MODEL
-    # hybrid
+    # hybrid (quality-first):
+    #   - orchestrator routing decisions → Claude (sharp delegation)
+    #   - any complex specialist task     → Opus (max intelligence)
+    #   - coding/data (correctness)       → Claude even for simple tasks
+    #   - other simple specialist tasks   → local (cheap, where smarts matter least)
     if agent_key == "tina":
-        return LOCAL_MODEL
+        return ORCHESTRATOR_MODEL
     if agent_key in _HYBRID_CLOUD_AGENTS:
         return OPUS_MODEL if complex else MODEL
     return OPUS_MODEL if complex else LOCAL_MODEL
+
+
+_LOCAL_PREFIXES = ("ollama/", "ollama_chat/", "local/")
+
+
+def effort_for(model: str, *, complex: bool = False) -> str | None:
+    """
+    Reasoning-effort level for a Claude model (output_config.effort), or None for
+    local models (Ollama ignores it). 'high' is the recommended minimum for
+    intelligence-sensitive work and is valid on Sonnet 4.6 + all Opus 4.x; 'xhigh'
+    exists only on Opus 4.7+, so it's reserved for complex work on those models.
+    """
+    if not model or model.startswith(_LOCAL_PREFIXES):
+        return None
+    if complex and (model.startswith("claude-opus-4-8") or model.startswith("claude-opus-4-7")):
+        return "xhigh"
+    return "high"
 
 # ── Wake & Exit ───────────────────────────────────────────────────────────────
 WAKE_WORDS        = ["hey tina", "tina"]
