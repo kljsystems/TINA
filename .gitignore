@@ -12,6 +12,15 @@ data/prefs.json
 data/tina_status.json
 data/summaries/
 
+# Runtime monitor/scheduler state (churns every run)
+data/briefing_date.txt
+data/weekly_briefing_date.txt
+data/pattern_scan_date.txt
+data/stripe_last_check.txt
+data/kaos_last_check.txt
+data/post_restart.json
+data/pending_tasks/
+
 # Python cache
 __pycache__/
 *.pyc

@@ -1,114 +1,145 @@
 # T.I.N.A — Totally Intelligent Neural Assistant
 
-A modular, voice-activated AI assistant built with Python and Claude.
+A voice-driven, always-on AI orchestration system. TINA coordinates a team of
+specialist agents, keeps persistent memory in an Obsidian vault, runs autonomous
+business monitoring, and only interrupts you for decisions that genuinely need you.
 
-## Features
+Built with Python (FastAPI + WebSockets), a React/Vite dashboard, and Claude.
 
-- Voice input via Faster-Whisper (offline STT)
-- AI responses via Claude Sonnet (Anthropic)
-- Voice output via ElevenLabs TTS
-- Wake word detection ("Hey TINA")
-- Web search via Tavily
-- Weather via OpenWeatherMap
-- Wikipedia lookups
-- Google Calendar integration (read, create, edit, delete)
-- Persistent memory across sessions
-- Animated HUD dashboard
-- Startup diagnostics
+> **Note on layout:** The live system is the FastAPI backend (`backend/`) plus the
+> React dashboard (`frontend/`). The top-level `core/`, `commands/`, and `dashboard/`
+> folders and `tina.py` are the **legacy single-process CLI** — kept for reference but
+> no longer the entry point.
 
-## Project Structure
+## Architecture
 
 ```
 TINA/
-├── tina.py              # Main entry point
-├── config.py            # All settings
-├── diagnostics.py       # Startup health checks
-├── core/
-│   ├── brain.py         # Claude API + tool routing
-│   ├── voice_in.py      # Whisper STT
-│   ├── voice_out.py     # ElevenLabs TTS
-│   ├── voice_manager.py # Voice selection
-│   └── memory.py        # Memory system
-├── tools/
-│   ├── search.py        # Tavily web search
-│   ├── weather.py       # OpenWeatherMap
-│   ├── wikipedia.py     # Wikipedia
-│   ├── news.py          # News via Tavily
-│   └── calendar_tool.py # Google Calendar
-├── commands/
-│   ├── diagnostics_cmd.py  # "run a system check"
-│   ├── voice_cmd.py        # "change your voice"
-│   └── memory_cmd.py       # "remember that..."
-├── dashboard/
-│   ├── dashboard.html   # Animated HUD
-│   └── writer.py        # Live status writer
-└── data/                # Auto-created, gitignored
+├── backend/
+│   ├── main.py              # ENTRY POINT — FastAPI app, WebSocket server,
+│   │                        #   all autonomous schedulers, Slack listener
+│   └── tina/
+│       ├── agent.py         # Tina — the orchestrator (Claude Sonnet 4.6)
+│       ├── agent_state.py   # background agent dispatch + state
+│       ├── memory.py        # Obsidian vault memory writer
+│       ├── memory_db.py     # Supabase conversation persistence
+│       ├── diagnostics.py   # startup health checks
+│       ├── wake_word.py     # faster-whisper wake-word detector (off by default)
+│       └── agents/
+│           ├── base.py      # BaseAgent — shared tool loop + compaction
+│           ├── coding.py    # Sam     — code, debug, architecture
+│           ├── research.py  # Charlie — web/news/wiki research, media
+│           ├── email.py     # Tristan — Gmail + Outlook, triage, drafts
+│           ├── data.py      # Connor  — CSV/Excel/JSON, charts, financials
+│           ├── marketing.py # Wade    — social content, Meta posting
+│           ├── website.py   # Jamie   — UI/UX, HTML/CSS/JS, React/Next.js
+│           └── pm.py        # Morgan  — project manager / agent coordinator
+├── tools/                   # Tool modules (auto-discovered: DEFINITIONS + handle)
+│   ├── vault.py  weather.py  calendar_tool.py  github_tool.py  slack_tool.py
+│   ├── stripe_tool.py  kaos_tool.py  social_tool.py  gdrive_tool.py
+│   ├── filesystem_tool.py  git_tool.py  test_tool.py  lint_tool.py
+│   ├── screenshot_tool.py  commission_tool.py  data_tool.py  docs_tool.py …
+├── frontend/                # React + Vite dashboard (TinaFace, agent grid, logs)
+├── scripts/                 # auth_gmail / auth_calendar / imports / utilities
+├── config.py                # ALL settings — models, paths, voices, system prompt
+├── data/                    # runtime state (tokens, monitor state, status) — gitignored
+└── docker-compose.yml       # (Postgres/Redis — optional)
 ```
+
+## The agents
+
+| Agent   | Name    | Owns |
+|---------|---------|------|
+| coding    | **Sam**     | Code, debugging, architecture, self-development |
+| research  | **Charlie** | Web/news/Wikipedia research, downloads media |
+| email     | **Tristan** | Gmail + Outlook, triage, drafts (never auto-sends) |
+| data      | **Connor**  | CSV/Excel/JSON analysis, financials, charts |
+| marketing | **Wade**    | Social content, trends, Facebook/Instagram posting |
+| website   | **Jamie**   | UI/UX, HTML/CSS/JS, React/Next.js, SEO |
+| pm        | **Morgan**  | Coordinates a project brief → completion across agents |
+
+Tina delegates to specialists via `delegate_to_agent` (background, non-blocking).
+Morgan drives specialists via `commission_agent` with a critical PASS / NEEDS-MORE-WORK
+review gate. Agents communicate through Slack channels and the shared Obsidian vault.
+
+## What runs automatically
+
+Scheduled in the backend lifespan (`backend/main.py`):
+
+- **Morning briefing** — once/day on first startup: opens Calendar, pushes
+  weather / calendar / Stripe / KAOS cards, then speaks a synthesized summary.
+- **Weekly briefing** (Mon) — Connor + Wade + Tristan produce a business report.
+- **Email triage** (8am, 2pm) — Tristan classifies, files, and drafts replies.
+- **Inbox pipeline** (15 min) — classifies vault `00-Inbox/` notes and routes them.
+- **KAOS monitor** (15 min) — tickets, signups, subscriptions, Sentry errors.
+- **Stripe monitor** (30 min) — failed charges, subs, disputes, live MRR.
+- **Pattern scan** (Sun) — Connor mines KAOS tickets for feature-request signals.
+- **Nightly reindex** (2am) — Sam rebuilds each project's codebase index.
+
+## Voice & I/O
+
+- **STT:** Deepgram nova-2 (en-AU) by default; faster-whisper offline fallback.
+- **TTS:** ElevenLabs (Matilda, raw PCM); pyttsx3 local fallback.
+- **Input:** browser mic via spacebar push-to-talk, text bar, or Slack DM.
+- **Wake word** is disabled by default — holding the mic open continuously triggered
+  system-wide audio AEC artifacts. Set `WAKE_WORD_ENABLED=true` only if your hardware
+  handles it cleanly.
 
 ## Setup
 
-### 1. Clone the repo
-```bash
-git clone https://github.com/yourusername/tina.git
-cd tina
-```
-
-### 2. Install dependencies
+### 1. Install dependencies
 ```bash
 pip install -r requirements.txt
+cd frontend && npm install
 ```
 
-### 3. Create your `.env` file
+### 2. Create your `.env` (in the repo root)
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-ELEVENLABS_API_KEY=sk_...
-TAVILY_API_KEY=tvly-...
+DEEPGRAM_API_KEY=...
+ELEVENLABS_API_KEY=...
+TAVILY_API_KEY=...
 OPENWEATHER_API_KEY=...
+GITHUB_TOKEN=...
+SUPABASE_URL=...           SUPABASE_KEY=...
+SLACK_TINA_BOT_TOKEN=...   SLACK_APP_TOKEN=...   SLACK_CHANNEL=...   SLACK_KY_USER_ID=...
+STRIPE_SECRET_KEY=...
+KAOS_SUPABASE_URL=...      KAOS_SUPABASE_SERVICE_KEY=...
+SENTRY_AUTH_TOKEN=...      SENTRY_ORG=...        SENTRY_PROJECT=...
+META_PAGE_ACCESS_TOKEN=... META_PAGE_ID=...      META_INSTAGRAM_ACCOUNT_ID=...
+WAKE_WORD_ENABLED=false
+# KLJ_BASE=C:\Users\...\Desktop\KLJ   (override on a different machine)
 ```
 
-### 4. Google Calendar (optional)
-- Create a Google Cloud project
-- Enable the Google Calendar API
-- Create OAuth 2.0 credentials (Desktop app)
-- Download as `credentials.json` and place in the root folder
-
-### 5. Run
+### 3. Google auth (Calendar + Gmail)
+Place OAuth `credentials.json` in the root, then:
 ```bash
-python tina.py
+python scripts/auth_calendar.py
+python scripts/auth_gmail.py
 ```
 
-### 6. Dashboard
-In a second terminal:
+### 4. Run
 ```bash
-python -m http.server 8080
+# Backend (from repo root)
+python backend/main.py
+
+# Frontend (second terminal)
+cd frontend && npm run dev
 ```
-Then open `http://localhost:8080/dashboard/dashboard.html`
 
-## Adding Features
+Open the Vite dev URL the frontend prints. Hold **spacebar** to talk.
 
-**New tool** — create a file in `tools/` with `DEFINITIONS` list and `handle(name, inputs)` function. It's auto-discovered.
+## Extending TINA
 
-**New command** — create a file in `commands/` with `TRIGGERS` list and `handle(text, ctx)` function. It's auto-discovered.
+- **New tool** — add a file in `tools/` with a `DEFINITIONS` list and a
+  `handle(name, inputs)` function, then include the module in the relevant agent's
+  `tool_modules`. Tina's own tools are wired in `backend/main.py` / `agent.py`.
+- **New agent** — subclass `BaseAgent` in `backend/tina/agents/`, set `name`,
+  `description`, `system`, and `tool_modules`, and register it in the dispatch map.
 
-No changes to `tina.py` needed.
+## Config
 
-## Voice Commands
-
-| Say | Action |
-|-----|--------|
-| "Hey TINA" | Wake word |
-| "run a system check" | Diagnostics report |
-| "change your voice" | Voice switcher |
-| "remember that..." | Save to memory |
-| "what do you remember?" | Recall memory |
-| "goodbye TINA" | Shutdown |
-
-## Roadmap
-
-- [ ] Porcupine wake word engine (pending approval)
-- [ ] File system access
-- [ ] ChromaDB long-term memory
-- [ ] FastAPI server for multi-device access
-- [ ] Local LLM via Ollama
-- [ ] KAOS integration
-- [ ] Mobile PWA client
+All settings live in `config.py` — models, vault/sites paths, voices, the project
+registry, and the full system prompt. Change things there, not in individual modules.
+Models: `claude-sonnet-4-6` (orchestrator + agents), `claude-opus-4-8` (complex tasks),
+`claude-haiku-4-5` (inbox classification).
