@@ -3,6 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 from .base import BaseAgent
 from tools import email_tool, vault, gdrive_tool
+from config import HAIKU_MODEL, model_for
 
 
 class EmailAgent(BaseAgent):
@@ -107,3 +108,10 @@ TOOLS
   - email_send: send an email. Requires confirmed=true. Only call after explicit approval."""
 
     tool_modules = [email_tool, vault, gdrive_tool]
+
+    def _agent_model(self, task: str, complex: bool) -> str:
+        # Autonomous triage (pure classification pass) runs on Haiku — high frequency,
+        # low reasoning demand. Explicit drafting/send tasks requested by Ky stay on Sonnet.
+        if "AUTONOMOUS TRIAGE MODE" in task and not complex:
+            return HAIKU_MODEL
+        return model_for("email", complex=complex)

@@ -57,13 +57,20 @@ MS_GRAPH_TOKEN_FILE      = os.path.join(BASE_DIR, "data", "ms_graph_token.json")
 OUTLOOK_SENDER           = os.getenv("OUTLOOK_SENDER",           "kydan@kljsystems.com.au")
 
 # ── AI Model ──────────────────────────────────────────────────────────────────
-MODEL              = "claude-sonnet-4-6"        # specialist agents (simple tasks)
-OPUS_MODEL         = "claude-opus-4-8"            # specialist agents (complex tasks)
-ORCHESTRATOR_MODEL = "claude-sonnet-4-6"          # tina orchestrator — hard/strategic turns
+HAIKU_MODEL        = "claude-haiku-4-5-20251001"  # lightweight agents — routine classification, simple lookups
+MODEL              = "claude-sonnet-4-6"           # specialist agents (general tasks)
+OPUS_MODEL         = "claude-opus-4-8"             # specialist agents (complex overhaul tasks)
+ORCHESTRATOR_MODEL = "claude-sonnet-4-6"           # tina orchestrator — hard/strategic turns
 # Cheap orchestrator tier for routine turns (greetings, simple tool calls, chit-chat).
 # Tina tiers between this and ORCHESTRATOR_MODEL by turn difficulty to save tokens
 # while staying on Claude for reliable tool routing. Override with MODEL_TINA in .env.
 ORCHESTRATOR_LIGHT_MODEL = os.getenv("ORCHESTRATOR_LIGHT_MODEL", "claude-haiku-4-5-20251001")
+
+# Agents eligible to drop to Haiku for non-complex work in cloud mode.
+# Deliberately excludes: coding (Sam — self-modification needs full reasoning),
+# data (Connor — financial analysis), pm (Morgan — coordination gate), and
+# marketing/website (Wade/Jamie — creative/technical quality matters).
+_HAIKU_ELIGIBLE = frozenset(["email", "research"])
 
 # ── Local / hybrid model routing (Ollama) ──────────────────────────────────────
 # LLM_MODE: "cloud"  = all Claude (original behaviour)
@@ -96,7 +103,13 @@ def model_for(agent_key: str, *, complex: bool = False) -> str:
             return ORCHESTRATOR_MODEL
         return ORCHESTRATOR_MODEL if complex else ORCHESTRATOR_LIGHT_MODEL
     if LLM_MODE == "cloud":
-        return OPUS_MODEL if complex else MODEL
+        if complex:
+            return OPUS_MODEL
+        # Route lightweight agents to Haiku for simple, repetitive work.
+        # Sam, Connor, Morgan, Jamie, Wade stay on Sonnet — they need full reasoning.
+        if agent_key in _HAIKU_ELIGIBLE:
+            return HAIKU_MODEL
+        return MODEL
     # hybrid (COST-FIRST / local-first):
     #   - any complex specialist task → Claude (Opus) — escalate only when necessary.
     #   - every other specialist task → local model (the default; this is where the
@@ -113,8 +126,11 @@ def effort_for(model: str, *, complex: bool = False) -> str | None:
     local models (Ollama ignores it). 'high' is the recommended minimum for
     intelligence-sensitive work and is valid on Sonnet 4.6 + all Opus 4.x; 'xhigh'
     exists only on Opus 4.7+, so it's reserved for complex work on those models.
+    Haiku models don't support extended thinking / reasoning effort — returns None.
     """
     if not model or model.startswith(_LOCAL_PREFIXES):
+        return None
+    if model.startswith("claude-haiku"):
         return None
     if complex and (model.startswith("claude-opus-4-8") or model.startswith("claude-opus-4-7")):
         return "xhigh"

@@ -234,6 +234,10 @@ class BaseAgent:
                 return key
         return "specialist"
 
+    def _agent_model(self, task: str, complex: bool) -> str:
+        """Resolve which model to use for this task. Override in subclasses for per-task routing."""
+        return model_for(self._agent_key(), complex=complex)
+
     def _build_request_agent_tool(self) -> dict:
         from tina.agent import _AGENTS
         # Build a per-agent description so the calling agent knows who does what.
@@ -295,8 +299,8 @@ class BaseAgent:
             enriched_task = f"{project_ctx}\n\n---\n\n{enriched_task}"
 
         _complex  = _is_complex_task(task)
-        model     = model_for(self._agent_key(), complex=_complex)
-        _effort   = effort_for(model, complex=_complex)   # None for local models
+        model     = self._agent_model(task, _complex)
+        _effort   = effort_for(model, complex=_complex)   # None for local/Haiku models
         history        = [{"role": "user", "content": enriched_task}]
         qa_rounds      = 0
         tool_call_count = 0
