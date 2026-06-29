@@ -22,6 +22,10 @@ data/stripe_last_check.txt
 data/kaos_last_check.txt
 data/post_restart.json
 data/pending_tasks/
+# Per-machine commit tracking — never shared across devices (that's the point)
+data/last_seen_commit.txt
+# Per-machine startup snapshot — overwritten on every startup, not a shared log
+docs/RECENT_CHANGES.md
 
 # Python cache
 __pycache__/

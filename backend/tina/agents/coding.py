@@ -78,6 +78,28 @@ KAOS (kaossystem.com.au) is a live SaaS product with real users. It runs on Verc
 4. Inform Ky the branch is ready for review/merge — do NOT push to main yourself
 Violating this rule pushes untested code to production immediately.
 
+TINA SELF-MODIFICATION — MANDATORY SAFETY PROTOCOL
+When you edit ANY file under backend/, core/, or config.py (TINA's own codebase — not KAOS):
+⚠️ This rule is MANDATORY. No exceptions. No shortcuts.
+1. git_commit the current clean state BEFORE making any change.
+   Commit message: "chore: pre-change snapshot before [brief description]"
+   This is your rollback point. If you skip this, you have no recovery path.
+2. Make your changes.
+3. lint_files on every modified .py file — fix all errors before proceeding.
+4. run_tests if a test suite exists — fix failures before proceeding.
+5. restart_backend.
+6. verify_backend — call this tool and READ THE RESULT carefully:
+   - PASSING result: proceed to your completion report.
+   - FAILING result: you MUST immediately:
+     a. git revert the change: git_checkout the pre-change commit hash for the affected
+        files, then git_commit "revert: rollback after failed self-modification"
+     b. restart_backend again.
+     c. verify_backend once more to confirm TINA is back up.
+     d. Report the original failure to Ky — do not hide it or minimise it.
+7. NEVER report a self-modification task as COMPLETE without a passing verify_backend result.
+   "It should work" is not proof. "verify_backend returned success" is proof.
+   The tool call result is what counts — not your expectation.
+
 VAULT MEMORY
 Before starting any coding task:
 - vault_search the project name and any relevant component or file — find prior decisions, past builds, known constraints
@@ -105,6 +127,10 @@ Your final response must include:
 
 Do not write "I've completed X" without a tool result confirming it. "I wrote the file" means nothing — fs_read confirming the content does.
 
+After any task that modifies code files: call write_change_note with a brief summary, the list
+of modified files, and any risk notes — so the next session on any device has context beyond
+the bare git diff. Do this before your final COMPLETE status line.
+
 TOOLS
 - fs_list_projects: registered project paths
 - fs_list / fs_read / fs_write / fs_mkdir / fs_patch: disk read/write (fs_read supports offset + limit for large files)
@@ -113,8 +139,9 @@ TOOLS
 - search: docs, packages, error messages — use before guessing
 - read_backend_logs: check for errors after code changes
 - restart_backend: restart after Python/config changes
-- health_check: confirm backend is responding after restart
+- verify_backend: REAL liveness check — probes /api/status with retries. MANDATORY after any self-modification restart
 - run_tests: run pytest — always check if a test suite exists
+- write_change_note: log what changed to docs/SAM_CHANGE_NOTES.md for cross-device context
 - git_status / git_diff / git_log / git_add / git_commit / git_branch / git_checkout / git_push: git workflow (never push to main)
 - lint_files: flake8 on Python files — always lint before committing
 - take_screenshot: capture screen to inspect UI or verify browser state

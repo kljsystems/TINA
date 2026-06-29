@@ -1200,12 +1200,79 @@ async def _drain_preview_queue():
                 break
 
 
+async def _run_startup_verification_task(changes: dict):
+    """
+    Dispatched as a background task when detect_recent_changes() finds new commits.
+    Runs lint → tests → liveness, then reports to Ky if anything failed.
+    Runs AFTER yield so the server is up and liveness probes work.
+    """
+    from tina.startup_changes import run_startup_verification
+    import time as _time
+
+    await asyncio.sleep(4)  # let uvicorn finish starting before liveness probe
+
+    touches_critical = changes.get("touches_critical_paths", False)
+    changed_files    = changes.get("changed_files", [])
+    commit_count     = changes.get("commit_count", 0)
+
+    print(
+        f"[startup-changes] running verification "
+        f"({len(changed_files)} changed files, critical={touches_critical})..."
+    )
+
+    result = await run_startup_verification(changed_files, touches_critical)
+
+    if result["passed"]:
+        msg = (
+            f"Startup verification passed. "
+            f"{commit_count} new commit(s) pulled from git — all checks clean."
+        )
+        print(f"[startup-changes] {msg}")
+        # Clean pass: log only, no verbal interruption needed
+        return
+
+    # Build failure message
+    failed_checks = ", ".join(d for d in result["details"] if "FAIL" in d or "ERROR" in d)
+    cross_device_note = ""
+    if touches_critical:
+        cross_device_note = (
+            " These changes touched core system files (backend/, core/, or config.py) "
+            "and came from a git pull of changes made on another device — "
+            "not from Sam in this session."
+        )
+
+    speech = (
+        f"Ky, startup verification failed after detecting {commit_count} new git commit(s). "
+        f"Failed: {failed_checks}.{cross_device_note} "
+        f"Full details are in docs/RECENT_CHANGES.md."
+    )
+
+    await broadcast({
+        "type":    "featured_panel",
+        "id":      str(uuid.uuid4()),
+        "title":   "STARTUP VERIFY FAILED",
+        "content": speech[:380],
+        "color":   "#ef4444",
+        "ttl":     120000,
+        "ts":      int(_time.time() * 1000),
+    })
+    await broadcast({"type": "response", "text": speech})
+    asyncio.create_task(_tts_stream(speech))
+    asyncio.create_task(_slack_post(f":warning: *TINA STARTUP* — {speech}"))
+    print(f"[startup-changes] VERIFICATION FAILED — {failed_checks}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _gaming_mode
     _gaming_mode = bool(_load_prefs().get("gaming_mode", False))
     if _gaming_mode:
         print("[gaming-mode] restored ENABLED from prefs — schedulers will stay paused until disabled")
+
+    # Detect changes from git pulls on other devices — synchronous, runs before schedulers.
+    # Writes docs/RECENT_CHANGES.md if new commits are found; verification dispatched below.
+    from tina.startup_changes import detect_recent_changes as _detect_changes
+    _startup_changes = _detect_changes()
 
     asyncio.create_task(_schedule_nightly_reindex())
     asyncio.create_task(_run_startup_briefing())
@@ -1219,6 +1286,11 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_schedule_stripe_monitor())
     asyncio.create_task(_schedule_pattern_scan())
     asyncio.create_task(_start_slack_listener())
+
+    # If new commits were pulled, run verification after the server is up.
+    # Mandatory when touches_critical_paths is True (backend/, core/, config.py changed).
+    if _startup_changes.get("found"):
+        asyncio.create_task(_run_startup_verification_task(_startup_changes))
 
     # Wake-word detector — disabled by default; set WAKE_WORD_ENABLED=true in .env to enable.
     # Holding a WASAPI capture session open continuously triggers audio driver AEC globally,

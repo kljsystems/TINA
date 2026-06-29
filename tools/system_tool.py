@@ -5,8 +5,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import BASE_DIR
 
 RESTART_FLAG = os.path.join(BASE_DIR, "data", "restart.flag")
+LOG_FILE     = os.path.join(BASE_DIR, "data", "backend.log")
+_DOCS_DIR          = os.path.join(BASE_DIR, "docs")
+_CHANGE_NOTES_FILE = os.path.join(_DOCS_DIR, "SAM_CHANGE_NOTES.md")
 
-LOG_FILE = os.path.join(BASE_DIR, "data", "backend.log")
+
+def check_backend_liveness(attempts: int = 5) -> tuple:
+    """
+    Real liveness check: probe /api/status with retries and short timeouts.
+    Returns (alive: bool, message: str).
+    Reused by verify_backend tool and startup_changes.py verification — extracted here
+    so both callers share identical retry/timeout logic with no duplication.
+    """
+    import time
+    import httpx
+
+    if os.path.exists(RESTART_FLAG):
+        return False, "Restart is still in progress — the flag file hasn't been consumed yet."
+
+    for attempt in range(1, attempts + 1):
+        try:
+            r = httpx.get("http://localhost:8000/api/status", timeout=3.0)
+            if r.status_code == 200:
+                return True, (
+                    f"Backend is up and responding (confirmed on attempt {attempt}/{attempts}). "
+                    "Self-modification task is safe to report as COMPLETE."
+                )
+        except Exception:
+            pass
+        if attempt < attempts:
+            time.sleep(1)
+
+    return (
+        False,
+        (
+            f"BACKEND IS NOT RESPONDING — all {attempts} liveness probes to /api/status failed. "
+            "Do NOT report this task as complete. "
+            "Investigate immediately: call read_backend_logs to see the startup crash, "
+            "then git revert to the pre-change commit, restart_backend, and verify_backend again."
+        ),
+    )
 
 DEFINITIONS = [
     {
@@ -54,10 +92,42 @@ DEFINITIONS = [
     {
         "name": "verify_backend",
         "description": (
-            "Check whether the backend is currently healthy after a restart or code change. "
-            "Returns whether the backend process appears to be up, based on the absence of a restart flag."
+            "Confirm the backend is actually alive after a restart or self-modification. "
+            "Performs a REAL liveness check: verifies the restart flag is gone, then probes "
+            "/api/status with retries (5 attempts, 3s timeout each). "
+            "REQUIRED after any restart_backend call on TINA's own code. "
+            "A passing result is the only valid proof the backend came back up — "
+            "do NOT report a self-modification task as complete without calling this first."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "write_change_note",
+        "description": (
+            "Append a timestamped entry to docs/SAM_CHANGE_NOTES.md — a cross-device running log "
+            "of code changes Sam has made. Call after completing any task that modifies code files "
+            "so the next session (possibly on a different machine) has human-readable context "
+            "beyond the bare git diff. Append-only — never overwrites existing notes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type":        "string",
+                    "description": "Brief description of what changed and why.",
+                },
+                "files": {
+                    "type":        "array",
+                    "items":       {"type": "string"},
+                    "description": "List of file paths that were modified.",
+                },
+                "risk_notes": {
+                    "type":        "string",
+                    "description": "Any risks, known issues, or follow-up needed.",
+                },
+            },
+            "required": ["summary"],
+        },
     },
     {
         "name": "open_terminal",
@@ -226,9 +296,33 @@ def handle(name: str, inputs: dict) -> str:
         )
 
     if name == "verify_backend":
-        if os.path.exists(RESTART_FLAG):
-            return "Restart is still in progress — the flag file hasn't been consumed yet."
-        return "No pending restart flag. Backend should be running normally."
+        alive, message = check_backend_liveness()
+        return message
+
+    if name == "write_change_note":
+        from datetime import datetime as _dt
+        summary    = inputs.get("summary", "").strip()
+        files      = inputs.get("files") or []
+        risk_notes = inputs.get("risk_notes", "").strip()
+        if not summary:
+            return "write_change_note requires a summary."
+        os.makedirs(_DOCS_DIR, exist_ok=True)
+        now_str   = _dt.now().strftime("%Y-%m-%d %H:%M")
+        file_list = "\n".join(f"  - {f}" for f in files) if files else "  (no files listed)"
+        risk_line = f"\n**Risks/Notes:** {risk_notes}" if risk_notes else ""
+        entry = (
+            f"\n---\n\n"
+            f"## {now_str}\n\n"
+            f"**Summary:** {summary}\n\n"
+            f"**Files changed:**\n{file_list}"
+            f"{risk_line}\n"
+        )
+        try:
+            with open(_CHANGE_NOTES_FILE, "a", encoding="utf-8") as f:
+                f.write(entry)
+            return f"Change note appended to docs/SAM_CHANGE_NOTES.md ({now_str})"
+        except Exception as e:
+            return f"Could not write change note: {e}"
 
     if name == "open_terminal":
         import subprocess
